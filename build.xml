@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="balda-j2me" default="run" basedir=".">
+  <property file="local.properties"/>
+
+  <property name="src.dir" value="src"/>
+  <property name="res.dir" value="res"/>
+  <property name="build.dir" value="build"/>
+  <property name="classes.dir" value="${build.dir}/classes"/>
+  <property name="prever.dir" value="${build.dir}/preverified"/>
+  <property name="dist.dir" value="dist"/>
+  <property name="proguard.home" value="${basedir}/tools/proguard"/>
+  <condition property="proguard.bin"
+       value="${proguard.home}/bin/proguard.bat"
+       else ="${proguard.home}/bin/proguard.sh">
+    <os family="windows"/>
+  </condition>
+
+  <!-- Компилим строго против CLDC/MIDP-стабов -->
+  <path id="bootcp">
+    <pathelement location="lib/cldcapi11.jar"/>
+    <pathelement location="lib/midpapi20.jar"/>
+  </path>
+
+  <target name="clean">
+    <delete dir="${build.dir}"/>
+    <delete dir="${dist.dir}"/>
+  </target>
+
+  <target name="prepare">
+    <mkdir dir="${classes.dir}"/>
+    <mkdir dir="${prever.dir}"/>
+    <mkdir dir="${dist.dir}"/>
+  </target>
+
+  <!-- Компиляция древнего байткода -->
+  <target name="compile" depends="prepare">
+    <javac srcdir="${src.dir}" destdir="${classes.dir}"
+           source="1.3" target="1.1" includeantruntime="false"
+           bootclasspathref="bootcp"/>
+  </target>
+
+  <!-- Preverify через ProGuard (установлен brew'ом) -->
+  <target name="preverify" depends="compile">
+    <exec executable="${proguard.bin}" failonerror="true">
+      <arg value="@proguard.pro"/>
+    </exec>
+  </target>
+
+  <!-- Перед упаковкой кладём ресурсы (PNG) в preverified-вывод -->
+  <target name="copy-res" depends="preverify">
+    <copy todir="${prever.dir}">
+      <fileset dir="${res.dir}">
+        <include name="**/*.png"/>
+      </fileset>
+    </copy>
+  </target>
+
+  <!-- Упаковка JAR с манифестом MIDP -->
+  <target name="jar" depends="copy-res">
+    <jar destfile="${dist.dir}/${suite.name}.jar" basedir="${prever.dir}">
+      <manifest>
+        <attribute name="MIDlet-Name" value="${suite.name}"/>
+        <attribute name="MIDlet-Vendor" value="${vendor}"/>
+        <attribute name="MIDlet-Version" value="${version}"/>
+        <attribute name="MicroEdition-Configuration" value="CLDC-${cldc.config}"/>
+        <attribute name="MicroEdition-Profile" value="MIDP-${midp.profile}"/>
+        <attribute name="MIDlet-1" value="${midlet.display}, , ${midlet.class}"/>
+      </manifest>
+    </jar>
+  </target>
+
+  <!-- JAD с правильным размером JAR -->
+  <target name="jad" depends="jar">
+    <length property="jar.size" file="${dist.dir}/${suite.name}.jar"/>
+    <echo file="${dist.dir}/${suite.name}.jad">
+MIDlet-Name: ${suite.name}
+MIDlet-Vendor: ${vendor}
+MIDlet-Version: ${version}
+MicroEdition-Configuration: CLDC-${cldc.config}
+MicroEdition-Profile: ${midp.profile}
+MIDlet-1: ${midlet.display}, , ${midlet.class}
+MIDlet-Jar-URL: ${suite.name}.jar
+MIDlet-Jar-Size: ${jar.size}
+    </echo>
+  </target>
+
+  <target name="package" depends="jad"/>
+
+  <!-- Запуск MicroEmulator с JAD -->
+  <target name="run" depends="package">
+    <java classname="org.microemu.app.Main" fork="true">
+      <classpath>
+        <pathelement location="tools/microemulator.jar"/>
+      </classpath>
+      <arg value="${dist.dir}/${suite.name}.jad"/>
+    </java>
+  </target>
+
+    <target name="run-jar" depends="package">
+        <java classname="org.microemu.app.Main" fork="true" dir="${basedir}">
+            <classpath>
+                <pathelement location="tools/microemulator.jar"/>
+            </classpath>
+            <arg value="${dist.dir}/${suite.name}.jar"/>
+        </java>
+    </target>
+
+  <target name="run-freej2me" depends="package">
+    <java jar="tools/freej2me.jar" fork="true">
+      <arg value="${dist.dir}/${suite.name}.jar"/>
+      <arg value="240"/>
+      <arg value="320"/>
+      <arg value="2"/>
+    </java>
+  </target>
+</project>
+

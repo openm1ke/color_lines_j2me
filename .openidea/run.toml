@@ -1,0 +1,32 @@
+[[configurations]]
+id = "user:lines-run"
+name = "Lines — FreeJ2ME 240x320"
+kind = "shell"
+command = "python3"
+args = ["antw", "run"]
+cwd = "."
+
+[[configurations]]
+id = "user:lines-build"
+name = "Lines — Build JAR + JAD"
+kind = "shell"
+command = "python3"
+args = ["antw", "package"]
+cwd = "."
+
+[[configurations]]
+id = "user:lines-test"
+name = "Lines — Check"
+kind = "shell"
+command = "python3"
+args = ["antw", "test"]
+cwd = "."
+is-test = true
+
+[[configurations]]
+id = "user:lines-clean"
+name = "Lines — Clean"
+kind = "shell"
+command = "python3"
+args = ["antw", "clean"]
+cwd = "."

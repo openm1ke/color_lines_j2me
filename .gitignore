@@ -1,8 +1,37 @@
+# OS and editor metadata
 .DS_Store
+Thumbs.db
+Desktop.ini
 .idea/
-build/
-config/
-dist/
-freej2me_system/
-*.jad
+*.iml
+*.swp
+*.swo
+*~
+
+# Generated classes, packages and compiler downloads
+/build/
+/dist/
+/out/
+/tools/build/
+*.class
 *.jar
+*.jad
+*.download
+
+# FreeJ2ME settings, logs and persistent game records
+/config/
+/freej2me_system/
+/rms/
+*.log
+
+# Local OpenIDEA state; keep shared run configurations
+.openidea/*.local.toml
+.openidea/workspace*
+.openidea/changelists.json
+.openidea/shelf/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/

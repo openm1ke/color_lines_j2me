@@ -13,7 +13,7 @@ public class LinesMidlet extends MIDlet implements CommandListener {
         if (display == null) {
             display = Display.getDisplay(this);
             canvas = new LinesCanvas(new LinesCanvas.Host() {
-                public void onExitRequested() { notifyDestroyed(); }
+                public void onExitRequested() { exit(); }
             });
 
             canvas.addCommand(UNDO);
@@ -27,9 +27,14 @@ public class LinesMidlet extends MIDlet implements CommandListener {
     protected void pauseApp() { if (canvas != null) canvas.pause(); }
     protected void destroyApp(boolean unconditional) { if (canvas != null) canvas.stop(); }
 
+    private void exit() {
+        if (canvas != null) canvas.stop();
+        notifyDestroyed();
+    }
+
     public void commandAction(Command c, Displayable d) {
         if (c == EXIT) {
-            notifyDestroyed();
+            canvas.requestExit();
         } else if (c == UNDO) {
             canvas.undoOne();
         }

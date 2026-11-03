@@ -1,0 +1,9 @@
+Pop sounds — EZduzziteh
+Source: https://opengameart.org/content/pop-sounds-0
+Original files: https://opengameart.org/sites/default/files/pop1.wav
+https://opengameart.org/sites/default/files/pop2.wav
+https://opengameart.org/sites/default/files/pop3.wav
+License: CC0 1.0 Universal
+https://creativecommons.org/publicdomain/zero/1.0/
+Downloaded 2026-11-03. Converted stereo 44.1 kHz WAV to mono 16 kHz 16-bit PCM WAV
+for small J2ME packages. No other modifications. Credit is voluntary under CC0.

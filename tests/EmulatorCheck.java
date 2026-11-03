@@ -17,6 +17,16 @@ public class EmulatorCheck {
         check((Integer)get(c,"state")==wanted,"screen "+wanted+" not reached");
     }
     static int[] cells(Object c)throws Exception { int[][] b=(int[][])get(c,"board");int[] a=new int[b.length*b.length];for(int r=0;r<b.length;r++)for(int col=0;col<b.length;col++)a[r*b.length+col]=b[r][col];return a; }
+    static void kingBounds(Object c)throws Exception {
+        synchronized(c) {
+            Object king=get(c,"king");
+            javax.microedition.lcdui.Image sprite=(javax.microedition.lcdui.Image)get(king,"sprite");
+            int x=(Integer)get(king,"x"), right=(Integer)get(c,"originX")+(Integer)get(c,"gridSizePx");
+            check(x-right>=10,"king too close to board");
+            check(x+sprite.getWidth()<=((javax.microedition.lcdui.Displayable)c).getWidth()-2,"king clipped at screen edge");
+            check((Integer)get(king,"baseY")-(Integer)get(king,"maxHeight")-sprite.getHeight()>=0,"raised king clips at top");
+        }
+    }
     static void screenshot(String name)throws Exception {
         Thread.sleep(100);File dir=new File(System.getProperty("lines.project","."),"build/emulator-check");dir.mkdirs();
         javax.imageio.ImageIO.write(Mobile.getPlatform().getLcdFrontbufferImage(),"png",new File(dir,name+".png"));
@@ -44,7 +54,7 @@ public class EmulatorCheck {
             state(c,0);
             check(((javax.microedition.lcdui.Displayable)c).getWidth()==width&&((javax.microedition.lcdui.Displayable)c).getHeight()==height,"launch resolution ignored");
             if(width!=240||height!=320){
-                screenshot("menu-"+width+"x"+height);key(c,-6);state(c,1);screenshot("game-"+width+"x"+height);
+                screenshot("menu-"+width+"x"+height);key(c,-6);state(c,1);kingBounds(c);screenshot("game-"+width+"x"+height);
                 int[] unchanged=cells(c);int sameSeed=(Integer)get(c,"seed");menu(c,2,4);screenshot("settings-"+width+"x"+height);
                 synchronized(c){set(c,"settingsSel",8);call(c,"scrollSettings");}screenshot("settings-bottom-"+width+"x"+height);
                 menu(c,4,6);String[] lines=(String[])get(c,"helpLines");
@@ -55,6 +65,9 @@ public class EmulatorCheck {
                 System.out.println("VISIBLE EMULATOR LAYOUT PASSED: "+width+"x"+height);System.exit(0);
             }
             key(c,-6);state(c,1);
+            kingBounds(c);
+            int initialKingHeight=(Integer)get(get(c,"king"),"height");
+            check(initialKingHeight==2,"new game pedestal did not start small");screenshot("king-start");
             int[][] b=(int[][])get(c,"board");int n=b.length,cell=(Integer)get(c,"cell"),ox=(Integer)get(c,"originX"),oy=(Integer)get(c,"originY");boolean moved=false;
             outer:for(int r=0;r<n;r++)for(int col=0;col<n;col++)if(b[r][col]>0)for(int[] d:new int[][]{{-1,0},{1,0},{0,-1},{0,1}}){
                 int rr=r+d[0],cc=col+d[1];if(rr>=0&&rr<n&&cc>=0&&cc<n&&b[rr][cc]==0){click(c,ox+col*cell+cell/2,oy+r*cell+cell/2);Thread.sleep(80);
@@ -78,6 +91,11 @@ public class EmulatorCheck {
             long until=System.currentTimeMillis()+4000;while(!(Boolean)get(c,"clearing")&&System.currentTimeMillis()<until)Thread.sleep(10);
             check((Boolean)get(c,"clearing"),"real move did not clear a line");screenshot("staggered-clear");stable(c);
             check((Integer)get(c,"score")==5&&(Integer)get(c,"popupScore")==5,"clear score/popup wrong");screenshot("points-popup");
+            Object king=get(c,"king");check((Integer)get(king,"height")>initialKingHeight,"king pedestal did not rise after clearing balls");
+            screenshot("king-after-clear");
+            synchronized(c){set(c,"score",100);set(c,"displayScore",100);king.getClass().getMethod("reset",int.class).invoke(king,100);}
+            screenshot("king-high-pedestal");
+            synchronized(c){set(c,"score",5);set(c,"displayScore",5);king.getClass().getMethod("reset",int.class).invoke(king,5);}
             key(c,-7);state(c,0);screenshot("main-menu");menu(c,2,4);
             int settingsTop=40,settingsStep=21; // Screen hit targets; constants are inlined/removed by ProGuard.
             check((Integer)call(c,"settingsVisible")==9,"nine settings must fit at 240x320");
@@ -100,7 +118,7 @@ public class EmulatorCheck {
                 menu(c,2,4);
                 while((Integer)get(prefs,"size")!=wanted){click(c,220,settingsTop+8);Thread.sleep(80);}
                 key(c,-6);state(c,0);menu(c,1,7);key(c,-7);state(c,1);
-                check((Integer)get(c,"N")==wanted,"manual board size not applied");screenshot("field-"+wanted+"x"+wanted);
+                check((Integer)get(c,"N")==wanted,"manual board size not applied");kingBounds(c);screenshot("field-"+wanted+"x"+wanted);
             }
             call(c,"stop");
             System.out.println("VISIBLE EMULATOR CHECK PASSED: all seven features, real input, RMS resume, patterns/presets, confirmation/help/statistics and 7x7/9x9/11x11 boards");System.exit(0);

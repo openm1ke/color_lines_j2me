@@ -17,6 +17,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private final GameStore preferences = new GameStore();
     private final SessionStore sessionStore = new SessionStore(preferences.sessionName());
     private int moves, longestLine;
+    private final BallKing king = new BallKing();
     private final Soundtrack soundtrack = new Soundtrack();
     private final SoundEffects soundEffects = new SoundEffects();
     private int colorCount = 5, ballsPerTurn = 3;
@@ -145,13 +146,20 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         fontHeight = fh;
         softBarH = fh + 6;
         softBarY = h - softBarH;
-        cell = Math.max(4, Math.min((w - 16) / N, (softBarY - fh - 28) / (N + 1)));
+        int kingScale = w >= 300 ? 2 : 1;
+        int sideWidth = w >= 300 ? 68 : w >= 220 ? 44 : 38;
+        int boardWidth = w - sideWidth;
+        cell = Math.max(4, Math.min((boardWidth - 12) / N, (softBarY - fh - 28) / (N + 1)));
         gridSizePx = cell * N;
         previewCell = Math.max(8, cell - 4);
         previewGap = Math.max(2, cell / 6);
         previewY = fh + 6;
         originY = previewY + previewCell + 8;
-        originX = (w - gridSizePx) / 2;
+        originX = (boardWidth - gridSizePx) / 2;
+        int kingGap = w >= 300 ? 16 : w >= 220 ? 12 : 10;
+        int kingWidth = w >= 300 ? 56 : w >= 220 ? 35 : 28;
+        king.layout(originX + gridSizePx + kingGap, originY + gridSizePx - 2 * kingScale,
+                    gridSizePx - 42 * kingScale, kingScale, score, kingWidth);
         if (state == S_HELP) buildHelp();
     }
 
@@ -577,6 +585,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     private void updateAnimation() {
         if (state != S_PLAY && state != S_GAMEOVER) return;
+        king.update(score);
         if (invalidTicks > 0) invalidTicks--;
         if (popupTicks > 0) popupTicks--;
         if (displayScore < score) displayScore += Math.max(1, (score - displayScore) / 4);
@@ -601,6 +610,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 score += clearCountCached;
                 longestLine = Math.max(longestLine, clearLongestCached);
                 popupScore = clearCountCached; popupTicks = 30;
+                king.celebrate(clearCountCached);
 
                 clearing = false;
                 clearTicks = 0;
@@ -865,6 +875,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         selectionTick = hintLen = invalidTicks = 0;
         reachable = new boolean[N][N]; hintR = new int[N*N]; hintC = new int[N*N];
         score = displayScore = popupTicks = popupScore = 0;
+        king.reset(0);
         clearOrder = new int[N][N]; clearLongestCached = 0;
         moves = longestLine = 0;
         moving = false;
@@ -970,6 +981,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             queuedColors[i] = s.qCol[i];
         }
         score = displayScore = s.score;
+        king.reset(score);
         popupTicks = 0;
         seed = s.seed;
         moves = s.moves; longestLine = s.longestLine;
@@ -1029,7 +1041,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
         int w = getWidth();
         int totalW = previewCell * ballsPerTurn + previewGap * (ballsPerTurn - 1);
-        int px = (w - totalW) / 2;
+        int px = originX + (gridSizePx - totalW) / 2;
         int py = previewY;
         String moveText = "M:" + moves;
         if (g.getFont().stringWidth(moveText) < px - 4) { g.setColor(0xAAAAAA); g.drawString(moveText, 2, py, Graphics.TOP | Graphics.LEFT); }
@@ -1117,6 +1129,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         String mode = N + "x" + N + " / " + colorCount + " colors / +" + ballsPerTurn;
         g.setColor(0xAAAAAA);
         g.drawString(mode, w / 2, softBarY - g.getFont().getHeight() - 2, Graphics.TOP | Graphics.HCENTER);
+        king.draw(g);
         drawSoftBar(g, "Undo", "Menu");
 
         if (popupTicks > 0) {

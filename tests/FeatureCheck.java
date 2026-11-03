@@ -145,6 +145,7 @@ public class FeatureCheck extends GameplayCheck {
         check(Arrays.equals(stableBoard,flat((int[][])get(interrupted,"board")))&&(Integer)get(interrupted,"score")==0,"interrupted clear saved a partial line");
         set(c,"paused",false);settle(c);LinesCanvas done=new LinesCanvas(null);
         check((Integer)get(done,"score")==5&&(Integer)get(done,"longestLine")==5&&Arrays.equals(flat(b),flat((int[][])get(done,"board"))),"completed clear not saved");
+        check((Integer)get(get(done,"king"),"height")>6,"saved score did not restore pedestal height");
         c.stop();c=canvas();call(c,"startNewGame");b=(int[][])get(c,"board");for(int[] row:b)Arrays.fill(row,1);
         java.lang.reflect.Method end=LinesCanvas.class.getDeclaredMethod("completeTurn",int.class);end.setAccessible(true);end.invoke(c,0);
         check((Integer)get(c,"state")==3&&!((Boolean)get(c,"hasGame")),"full board did not end game");
@@ -167,6 +168,52 @@ public class FeatureCheck extends GameplayCheck {
         GameStore reset=new GameStore();reset.size=9;reset.colors=5;reset.balls=3;reset.music=false;reset.musicVolume=35;reset.effectsVolume=70;reset.patterns=false;reset.save();
         System.out.println("PASS: previous audio/pattern settings versions migrate without losing records");
     }
+    static void kingPixelDetails() throws Exception {
+        java.lang.reflect.Method render=Class.forName("lines.KingPixels").getDeclaredMethod("render",int.class);
+        render.setAccessible(true);
+        java.awt.image.BufferedImage reference=javax.imageio.ImageIO.read(new java.io.File("res/images/king.png"));
+        java.io.File output=new java.io.File("build/king-pixels");output.mkdirs();
+        for(int width:new int[]{1,16,28,35,42,56,69,70,105,140}) {
+            javax.microedition.lcdui.Image image=(javax.microedition.lcdui.Image)render.invoke(null,width);
+            int h=image.getHeight();int[] pixels=new int[width*h];image.getRGB(pixels,0,width,0,0,width,h);
+            check(image.getWidth()==width&&Math.abs(h-width*66.0/70)<=0.5,"king proportions changed");
+            if(width==70)for(int y=0;y<h;y++)for(int x=0;x<width;x++)
+                check((pixels[y*width+x]&0xFFFFFF)==(reference.getRGB(x,y)&0xFFFFFF),"native king differs from source pixel");
+            if(width==35) {
+                // Both eyes retain equal white areas with separate inward pupils.
+                check(pixels[15*width+12]==0xFFFFFFFF&&pixels[15*width+16]==0xFFFFFFFF,"eye whites disappeared");
+                check(pixels[16*width+13]==0xFF000000&&pixels[16*width+15]==0xFF000000,"pupils disappeared");
+                check(pixels[16*width+12]==0xFFFFFFFF&&pixels[16*width+16]==0xFFFFFFFF,"eyes merged or became asymmetric");
+            }
+            java.awt.image.BufferedImage preview=new java.awt.image.BufferedImage(width,h,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+            preview.setRGB(0,0,width,h,pixels,0,width);
+            javax.imageio.ImageIO.write(preview,"png",new java.io.File(output,"king-"+width+".png"));
+        }
+        System.out.println("PASS: king native pixel fidelity, varied output sizes and symmetric readable small eyes");
+    }
+    static void kingPedestal() throws Exception {
+        BallKing king=new BallKing();king.layout(10,180,100,1,0);
+        int initial=(Integer)get(king,"height"),previous=initial;
+        check(initial==2,"new game pedestal must start as a tiny base");
+        for(int n=0;n<40;n++)king.update(0);
+        check((Integer)get(king,"height")==initial,"pedestal grew without scoring");
+        java.lang.reflect.Method target=BallKing.class.getDeclaredMethod("targetHeight",int.class);target.setAccessible(true);
+        for(int score:new int[]{5,10,50,100,1000,Integer.MAX_VALUE}){
+            int goal=(Integer)target.invoke(king,score);check(goal>=previous&&goal<=100,"pedestal must grow monotonically within bounds");
+            previous=goal;
+        }
+        king.celebrate(5);for(int n=0;n<40;n++)king.update(5);
+        check((Integer)get(king,"height")>initial&&(Integer)get(king,"height")==((Integer)target.invoke(king,5)).intValue(),"pedestal did not animate upward");
+        check((Integer)get(king,"saluteTicks")==0,"king celebration did not finish");king.reset(0);check((Integer)get(king,"height")==initial,"new game did not reset pedestal");
+        king.layout(10,180,100,2,0);check((Integer)get(king,"height")==4,"large-screen starting base too tall");
+        LinesCanvas c=canvas();call(c,"startNewGame");int seed=(Integer)get(c,"seed");int[] before=flat((int[][])get(c,"board"));
+        BallKing actor=(BallKing)get(c,"king");actor.celebrate(5);for(int n=0;n<20;n++){call(c,"updateAnimation");call(c,"render");}
+        check(Arrays.equals(before,flat((int[][])get(c,"board")))&&(Integer)get(c,"seed")==seed,"king animation changed game state");
+        int ox=(Integer)get(c,"originX"),width=(Integer)get(c,"gridSizePx"),x=(Integer)get(actor,"x");
+        javax.microedition.lcdui.Image sprite=(javax.microedition.lcdui.Image)get(actor,"sprite");
+        check(x-(ox+width)>=10&&x+sprite.getWidth()<=c.getWidth()-2,"king lacks board spacing or leaves screen");c.stop();
+        System.out.println("PASS: king pedestal growth/bounds/reset, celebration, separate layout and no gameplay/RNG changes");
+    }
     public static void main(String[] args) {
         try {
             Mobile.minLogLevel=Mobile.LOG_ERROR;
@@ -174,7 +221,7 @@ public class FeatureCheck extends GameplayCheck {
             check(platform.load(new java.io.File("dist/lines.jar").toURI().toString()),"cannot load JAR");
             for(String name:new String[]{System.getProperty("lines.store"),System.getProperty("lines.store")+"-game"})
                 try{javax.microedition.rms.RecordStore.deleteRecordStore(name);}catch(Exception ignored){}
-            new LinesMidlet();savedGameRoundTrip();hintsAndInvalidMoves();staggeredClearAndScore();accessiblePatterns();difficultyPresets();helpAndNewGameConfirmation();gameStatistics();savedClearAndGameOver();migrateRecentSettings();visibleMenuAndHelpText();
+            new LinesMidlet();savedGameRoundTrip();hintsAndInvalidMoves();staggeredClearAndScore();accessiblePatterns();difficultyPresets();helpAndNewGameConfirmation();gameStatistics();savedClearAndGameOver();migrateRecentSettings();visibleMenuAndHelpText();kingPixelDetails();kingPedestal();
             System.out.println("ALL FEATURE CHECKS PASSED");System.exit(0);
         }catch(Throwable e){e.printStackTrace();System.exit(1);}
     }

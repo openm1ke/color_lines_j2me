@@ -30,3 +30,12 @@ kind = "shell"
 command = "python3"
 args = ["antw", "clean"]
 cwd = "."
+
+[[configurations]]
+id = "user:lines-emulator-check"
+name = "Lines — Emulator checks"
+kind = "shell"
+command = "python3"
+args = ["antw", "check-emulator"]
+cwd = "."
+is-test = true

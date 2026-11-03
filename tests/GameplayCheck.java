@@ -19,7 +19,10 @@ public class GameplayCheck {
     }
     static void check(boolean ok,String text) { if(!ok)throw new AssertionError(text); }
     static int[] cells(int[][] b) { int[] a=new int[81]; for(int r=0;r<9;r++)for(int c=0;c<9;c++)a[r*9+c]=b[r][c];return a; }
-    static LinesCanvas canvas() throws Exception { return new LinesCanvas(null); }
+    static LinesCanvas canvas() throws Exception {
+        try { javax.microedition.rms.RecordStore.deleteRecordStore(System.getProperty("lines.store")+"-game"); } catch(Exception ignored) {}
+        return new LinesCanvas(null);
+    }
     static void initialUndo() throws Exception {
         LinesCanvas c=canvas(); call(c,"titleSelect");
         int[][] b=(int[][])get(c,"board"); int[] before=cells(b);
@@ -44,7 +47,7 @@ public class GameplayCheck {
         int[] queue=(int[])get(c,"queuedColors");queue[0]=5;queue[1]=6;queue[2]=7;
         int seed=(Integer)get(c,"seed");call(c,"finishMove");
         check((Boolean)get(c,"clearing"),"line did not start clearing");
-        for(int i=0;i<6;i++)call(c,"updateAnimation");
+        for(int i=0;i<40;i++)call(c,"updateAnimation");
         check((Integer)get(c,"score")==5,"incorrect score");
         for(int i=0;i<5;i++)check(b[0][i]==0,"line not removed");
         if(playerLine){check((Integer)get(c,"seed")==seed,"player line consumed next turn");check(color[0]==1,"player line changed previews");}
@@ -185,6 +188,7 @@ public class GameplayCheck {
         key(c,-6);call(c,"tick");
         key(c,-6);call(c,"tick");check((Integer)get(c,"N")==9,"Resume applied new rules");
         key(c,-7);call(c,"tick");set(c,"menuSel",1);call(c,"titleSelect");
+        check((Integer)get(c,"state")==7,"new game confirmation missing");key(c,-7);call(c,"tick");
         check((Integer)get(c,"N")==7&&(Integer)get(c,"colorCount")==3&&(Integer)get(c,"ballsPerTurn")==1,"New Game ignored settings");
         for(int size:GameStore.SIZES)for(int colors=3;colors<=7;colors++)for(int balls=1;balls<=3;balls++){
             prefs.size=size;prefs.colors=colors;prefs.balls=balls;call(c,"startNewGame");
@@ -199,7 +203,7 @@ public class GameplayCheck {
             for(int r=0;r<size;r++)check(Arrays.equals(original[r],board[r]),"Undo failed on nondefault board");
             call(c,"clearBoard");for(int col=size-5;col<size;col++)board[size-1][col]=1;
             check((Boolean)call(c,"startClearIfAny"),"line detection failed at board edge");
-            for(int n=0;n<6;n++)call(c,"updateAnimation");
+            for(int n=0;n<40;n++)call(c,"updateAnimation");
             check((Integer)get(c,"score")==5,"nondefault board line score wrong");
             check(prefs.best(size,colors,balls)>=5,"score lost its active ruleset");
         }

@@ -13,24 +13,38 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private static final int S_PLAY  = 1;
     private static final int S_ABOUT = 2;
     private static final int S_GAMEOVER = 3;
-    private static final int S_SETTINGS = 4, S_STATS = 5;
+    private static final int S_SETTINGS = 4, S_STATS = 5, S_HELP = 6, S_CONFIRM = 7;
     private final GameStore preferences = new GameStore();
+    private final SessionStore sessionStore = new SessionStore(preferences.sessionName());
+    private int moves, longestLine;
     private final Soundtrack soundtrack = new Soundtrack();
     private final SoundEffects soundEffects = new SoundEffects();
     private int colorCount = 5, ballsPerTurn = 3;
     private boolean hasGame;
     private int settingsSel, settingsScroll, statsScroll, statsCount;
-    private final int[] settingsBefore = new int[7];
+    private final int[] settingsBefore = new int[8];
     private boolean settingsEditing;
-    private static final int SETTINGS_COUNT = 7, SETTINGS_VISIBLE = 7;
+    private static final int SETTINGS_COUNT = 9, SETTINGS_VISIBLE = 9;
+    private static final int SETTINGS_TOP = 40, SETTINGS_STEP = 21;
     private final int[] statsOrder = new int[45];
-    private int selectionTick;
+    private int selectionTick, helpScroll, confirmSel;
+    private String[] helpLines = new String[0];
+    private static final String[] HELP_TEXT = {
+        "Select a ball, then a cell.", "Use arrows + FIRE or tap.",
+        "Join 5+ matching balls.", "Rows, columns and diagonals all count.",
+        "Lit cells are reachable.", "Dotted lines preview paths.", "A shake means no free path.",
+        "Small balls show next spawns.", "Occupied previews relocate.", "Clear a line: no new balls.",
+        "Undo returns one turn.", "Menu pauses your game.", "Resume loads the last saved turn.",
+        "New Game asks before replacing a game.", "Rules change on New Game.",
+        "Patterns identify colors.", "Music and effects are separate.",
+        "Save keeps settings.", "Back cancels settings."
+    };
     private static final int[] BOUNCE = {0, 0, 1, 3, 5, 7, 8, 8, 7, 5, 3, 1, 0, 0, 0, 0};
     private int state = S_TITLE;
     private Thread loop;
     private volatile boolean running = false, paused = false;
     // Callbacks only publish requests; tick() owns all gameplay and drawing.
-    private static final int E_KEY = 1, E_POINTER = 2, E_UNDO = 3, E_DEMO = 4;
+    private static final int E_KEY = 1, E_POINTER = 2, E_UNDO = 3, E_DEMO = 4, E_HOVER = 5;
     private static final int INPUT_CAPACITY = 32;
     private final int[] eventType = new int[INPUT_CAPACITY];
     private final int[] eventX = new int[INPUT_CAPACITY];
@@ -43,7 +57,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private final int tickDelay = 40;
     private int N = 9;
     private int[][] board = new int[N][N];
-    private int cell, originX, originY, gridSizePx;
+    private int cell, originX, originY, gridSizePx, fontHeight;
     private int softBarH = 0, softBarY = 0;
     private int previewCell = 0;
     private int previewY = 0;
@@ -53,7 +67,8 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private int titleBlink = 0;
     private int curR = 4, curC = 4;
     private int selR = -1, selC = -1;
-    private int score = 0;
+    private int score = 0, displayScore;
+    private int popupScore, popupTicks, popupX, popupY;
     private static final int[] COLORS = {
         0,
         0xD13B3B, 0x3BA64B, 0x3E7BD6, 0xE0B13A,
@@ -80,6 +95,9 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private int[] pathR = new int[N*N];
     private int[] pathC = new int[N*N];
     private int pathLen = 0, pathIdx = 0;
+    private boolean[][] reachable = new boolean[N][N];
+    private int[] hintR = new int[N*N], hintC = new int[N*N];
+    private int hintLen, invalidTicks;
     private int stepDelay = 3, stepTick = 0;
     private static final int PREVIEW_K = 3;
     private final int[] nextR = new int[PREVIEW_K];
@@ -92,14 +110,15 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private boolean[][] clearMark = new boolean[N][N];
     private int clearTicks = 0;
     private int clearTicksMax = 6;
-    private int clearCountCached = 0;
+    private int clearCountCached = 0, clearLongestCached;
+    private int[][] clearOrder = new int[N][N];
 
     private static final class State {
         byte[] cells;
         byte nextCount;
         byte[] nR, nC, nCol;
         byte[] qCol;
-        int score, seed;
+        int score, seed, moves, longestLine;
         int curR, curC, selR, selC, state;
     }
     private final State[] hist = new State[128];
@@ -113,6 +132,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         try {
             titleLogo = Image.createImage("/img/lines2.png");
         } catch (Throwable ignored) { titleLogo = null; }
+        restoreSavedGame();
     }
 
     protected void sizeChanged(int w, int h) { layoutDirty = true; }
@@ -122,6 +142,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         Graphics g = getGraphics();
 
         int fh = g.getFont().getHeight();
+        fontHeight = fh;
         softBarH = fh + 6;
         softBarY = h - softBarH;
         cell = Math.max(4, Math.min((w - 16) / N, (softBarY - fh - 28) / (N + 1)));
@@ -131,6 +152,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         previewY = fh + 6;
         originY = previewY + previewCell + 8;
         originX = (w - gridSizePx) / 2;
+        if (state == S_HELP) buildHelp();
     }
 
     public synchronized void start() {
@@ -150,6 +172,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     public synchronized void pause() {
         paused = true;
+        saveStableGame();
         soundtrack.setActive(false);
         soundEffects.setSuspended(true);
         eventHead = eventCount = 0;
@@ -157,6 +180,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     }
 
     public synchronized void stop() {
+        saveStableGame();
         stopped = true;
         soundtrack.close();
         soundEffects.close();
@@ -222,6 +246,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             else if (type == E_POINTER) handlePointer(eventX[at], eventY[at]);
             else if (type == E_UNDO) undoNow();
             else if (type == E_DEMO) fillDemoNow();
+            else if (type == E_HOVER) handleHover(eventX[at], eventY[at]);
         }
         if (stopped) return;
         input();
@@ -241,7 +266,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             preferences.size = settingsBefore[0]; preferences.colors = settingsBefore[1];
             preferences.balls = settingsBefore[2]; preferences.music = settingsBefore[3] != 0;
             preferences.musicVolume = settingsBefore[4]; preferences.effects = settingsBefore[5] != 0;
-            preferences.effectsVolume = settingsBefore[6];
+            preferences.effectsVolume = settingsBefore[6]; preferences.patterns = settingsBefore[7] != 0;
             soundtrack.setVolume(preferences.musicVolume);
             soundtrack.setActive(preferences.music);
             soundEffects.configure(preferences.effects, preferences.effectsVolume);
@@ -255,7 +280,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         settingsBefore[0] = preferences.size; settingsBefore[1] = preferences.colors;
         settingsBefore[2] = preferences.balls; settingsBefore[3] = preferences.music ? 1 : 0;
         settingsBefore[4] = preferences.musicVolume; settingsBefore[5] = preferences.effects ? 1 : 0;
-        settingsBefore[6] = preferences.effectsVolume;
+        settingsBefore[6] = preferences.effectsVolume; settingsBefore[7] = preferences.patterns ? 1 : 0;
         settingsEditing = true;
         state = S_SETTINGS;
         settingsSel = settingsScroll = 0;
@@ -270,19 +295,24 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     }
 
     private void handleKey(int keyCode) {
+        if (state == S_CONFIRM) {
+            if (keyCode == -6) back();
+            else if (keyCode == -7) startNewGame();
+            return;
+        }
         if (keyCode == -7) { back(); return; }
         if (state == S_TITLE) {
             if (keyCode == -6) titleSelect();
         } else if (state == S_SETTINGS) {
             if (keyCode == -6) saveSettings();
-        } else if (state == S_STATS || state == S_ABOUT) {
+        } else if (state == S_STATS || state == S_ABOUT || state == S_HELP) {
             if (keyCode == -6) back();
         } else if (!moving && !clearing) {
             if (keyCode == -6 || keyCode == KEY_NUM1 || keyCode == 'u' || keyCode == 'U') undoNow();
         }
     }
 
-    private int menuCount() { return hasGame ? 6 : 5; }
+    private int menuCount() { return hasGame ? 7 : 6; }
 
     private void adjustSetting(int delta) {
         if (settingsSel == 0) {
@@ -302,15 +332,38 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         } else if (settingsSel == 5) {
             preferences.effects = !preferences.effects;
             soundEffects.configure(preferences.effects, preferences.effectsVolume);
-        } else {
+        } else if (settingsSel == 6) {
             preferences.effectsVolume = AudioVolume.clamp(preferences.effectsVolume + delta * 5);
             soundEffects.configure(preferences.effects, preferences.effectsVolume);
+        } else if (settingsSel == 7) preferences.patterns = !preferences.patterns;
+        else {
+            int preset = presetIndex();
+            applyPreset(preset < 0 ? (delta > 0 ? 0 : 2) : (preset + delta + 3) % 3);
         }
+    }
+
+    private int presetIndex() {
+        if (preferences.size != 9) return -1;
+        if (preferences.colors == 4 && preferences.balls == 1) return 0;
+        if (preferences.colors == 5 && preferences.balls == 2) return 1;
+        if (preferences.colors == 7 && preferences.balls == 3) return 2;
+        return -1;
+    }
+
+    private void applyPreset(int preset) {
+        preferences.size = 9;
+        preferences.colors = preset == 0 ? 4 : preset == 1 ? 5 : 7;
+        preferences.balls = preset == 0 ? 1 : preset == 1 ? 2 : 3;
+    }
+
+    private String presetName() {
+        int preset = presetIndex();
+        return preset == 0 ? "Relaxed" : preset == 1 ? "Normal" : preset == 2 ? "Classic" : "Custom";
     }
 
     private void scrollSettings() {
         if (settingsSel < settingsScroll) settingsScroll = settingsSel;
-        if (settingsSel >= settingsScroll + SETTINGS_VISIBLE) settingsScroll = settingsSel - SETTINGS_VISIBLE + 1;
+        if (settingsSel >= settingsScroll + settingsVisible()) settingsScroll = settingsSel - settingsVisible() + 1;
     }
 
     private void input() {
@@ -325,6 +378,16 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             return;
         }
 
+        if (state == S_CONFIRM) {
+            if ((press & (UP_PRESSED | DOWN_PRESSED | LEFT_PRESSED | RIGHT_PRESSED)) != 0) confirmSel = 1 - confirmSel;
+            if ((press & FIRE_PRESSED) != 0) { if (confirmSel == 1) startNewGame(); else back(); }
+            return;
+        }
+        if (state == S_HELP) {
+            if ((press & (UP_PRESSED | LEFT_PRESSED)) != 0 && helpScroll > 0) helpScroll--;
+            if ((press & (DOWN_PRESSED | RIGHT_PRESSED)) != 0 && helpScroll + helpPageSize() < helpLines.length) helpScroll++;
+            return;
+        }
         if (state == S_SETTINGS) {
             if ((press & UP_PRESSED) != 0) settingsSel = (settingsSel + SETTINGS_COUNT - 1) % SETTINGS_COUNT;
             if ((press & DOWN_PRESSED) != 0) settingsSel = (settingsSel + 1) % SETTINGS_COUNT;
@@ -350,11 +413,13 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
         if (moving || clearing) return;
 
+        int oldR = curR, oldC = curC;
         if ((press & LEFT_PRESSED)  != 0 && curC > 0)     curC--;
         if ((press & RIGHT_PRESSED) != 0 && curC < N - 1) curC++;
         if ((press & UP_PRESSED)    != 0 && curR > 0)     curR--;
         if ((press & DOWN_PRESSED)  != 0 && curR < N - 1) curR++;
 
+        if (oldR != curR || oldC != curC) refreshPathHint();
         if ((press & FIRE_PRESSED) != 0) handleSelectOrMoveAt(curR, curC);
     }
 
@@ -367,25 +432,38 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             int w = getWidth();
             if (px < w / 3) {
                 if (state == S_TITLE) titleSelect();
+                else if (state == S_CONFIRM || state == S_HELP) back();
                 else if (state == S_SETTINGS) saveSettings();
                 else if (state == S_ABOUT || state == S_STATS) back();
                 else undoNow();
             } else if (px > (w * 2) / 3) {
-                back();
+                if (state == S_CONFIRM) startNewGame(); else back();
             }
             return;
         }
         if (state == S_TITLE) {
-            int row = (py - menuY()) / (getGraphics().getFont().getHeight() + 6);
+            int row = (py - menuY()) / menuStep();
             if (py >= menuY() && row < menuCount()) { menuSel = row; titleSelect(); }
             return;
         }
+        if (state == S_CONFIRM) {
+            if (py >= 116 && py < 188) {
+                confirmSel = py < 152 ? 0 : 1;
+                if (confirmSel == 1) startNewGame(); else back();
+            }
+            return;
+        }
+        if (state == S_HELP) {
+            if (py < getHeight() / 2 && helpScroll > 0) helpScroll--;
+            else if (helpScroll + helpPageSize() < helpLines.length) helpScroll++;
+            return;
+        }
         if (state == S_SETTINGS) {
-            int row = (py - 50) / 26;
-            if (py >= 50 && row < SETTINGS_VISIBLE && settingsScroll + row < SETTINGS_COUNT) {
+            int row = (py - SETTINGS_TOP) / SETTINGS_STEP;
+            if (py >= SETTINGS_TOP && row < settingsVisible() && settingsScroll + row < SETTINGS_COUNT) {
                 settingsSel = settingsScroll + row;
                 adjustSetting(px < getWidth() / 2 ? -1 : 1);
-            } else if (py >= 218) {
+            } else if (py >= SETTINGS_TOP + settingsVisible() * SETTINGS_STEP) {
                 settingsSel = (settingsSel + 1) % SETTINGS_COUNT;
                 scrollSettings();
             }
@@ -413,17 +491,21 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private void titleSelect() {
         if (hasGame && menuSel == 0) { state = S_PLAY; return; }
         int item = hasGame ? menuSel - 1 : menuSel;
-        if (item == 0) startNewGame();
+        if (item == 0) {
+            if (hasGame) { state = S_CONFIRM; confirmSel = 0; }
+            else startNewGame();
+        }
         else if (item == 1) enterSettings();
         else if (item == 2) { state = S_STATS; refreshStatistics(); }
-        else if (item == 3) state = S_ABOUT;
+        else if (item == 3) { state = S_HELP; helpScroll = 0; buildHelp(); }
+        else if (item == 4) state = S_ABOUT;
         else exitNow();
     }
 
     private void refreshStatistics() {
         statsCount = statsScroll = 0;
         for (int i = 0; i < 45; i++) {
-            if (preferences.scoreAt(i) <= 0) continue;
+            if (preferences.scoreAt(i) <= 0 && preferences.gamesAt(i) == 0) continue;
             int j = statsCount;
             while (j > 0 && preferences.scoreAt(statsOrder[j - 1]) < preferences.scoreAt(i)) {
                 statsOrder[j] = statsOrder[j - 1]; j--;
@@ -434,22 +516,56 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     }
 
     private void handleSelectOrMoveAt(int r, int c) {
-        if (selR < 0) {
-            if (board[r][c] != 0) { selR = r; selC = c; selectionTick = 0; }
+        if (board[r][c] != 0) {
+            if (selR == r && selC == c) { selR = selC = -1; hintLen = 0; return; }
+            selR = r; selC = c; selectionTick = invalidTicks = 0;
+            refreshReachable(); refreshPathHint();
             return;
         }
-        if (selR == r && selC == c) { selR = selC = -1; return; }
-
+        if (selR < 0) return;
         int len = findPath(selR, selC, r, c, pathR, pathC);
-        if (board[r][c] == 0 && len > 0) {
+        if (len > 0) {
             startMove(selR, selC, len);
             selR = selC = -1;
         } else {
-            selR = selC = -1;
+            invalidTicks = 8;
+            hintLen = 0;
         }
     }
 
+    private void refreshReachable() {
+        for (int r = 0; r < N; r++) for (int c = 0; c < N; c++) reachable[r][c] = false;
+        if (selR < 0) return;
+        int[] queue = new int[N*N]; int head = 0, tail = 0;
+        queue[tail++] = selR * N + selC; reachable[selR][selC] = true;
+        int[] dr = {-1, 1, 0, 0}, dc = {0, 0, -1, 1};
+        while (head < tail) {
+            int at = queue[head++], r = at / N, c = at % N;
+            for (int i = 0; i < 4; i++) {
+                int nr = r + dr[i], nc = c + dc[i];
+                if (nr < 0 || nr >= N || nc < 0 || nc >= N || reachable[nr][nc] || board[nr][nc] != 0) continue;
+                reachable[nr][nc] = true; queue[tail++] = nr * N + nc;
+            }
+        }
+    }
+
+    private void refreshPathHint() {
+        hintLen = 0;
+        if (selR >= 0 && board[curR][curC] == 0 && reachable[curR][curC])
+            hintLen = findPath(selR, selC, curR, curC, hintR, hintC);
+    }
+
+    protected void pointerDragged(int px, int py) { enqueue(E_HOVER, px, py); }
+
+    private void handleHover(int px, int py) {
+        if (state != S_PLAY || moving || clearing || selR < 0) return;
+        if (px < originX || px >= originX + gridSizePx || py < originY || py >= originY + gridSizePx) return;
+        curR = (py - originY) / cell; curC = (px - originX) / cell;
+        refreshPathHint();
+    }
+
     private void startMove(int sr, int sc, int len) {
+        hintLen = invalidTicks = 0;
         moving = true;
         moveColor = board[sr][sc];
         board[sr][sc] = 0;
@@ -461,6 +577,10 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     private void updateAnimation() {
         if (state != S_PLAY && state != S_GAMEOVER) return;
+        if (invalidTicks > 0) invalidTicks--;
+        if (popupTicks > 0) popupTicks--;
+        if (displayScore < score) displayScore += Math.max(1, (score - displayScore) / 4);
+        else if (displayScore > score) displayScore = score;
         if (selR >= 0 && !moving && !clearing) selectionTick = (selectionTick + 1) % BOUNCE.length;
         if (moving) {
             if (++stepTick >= stepDelay) {
@@ -479,7 +599,8 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                     if (clearMark[r][c]) board[r][c] = 0;
                 }
                 score += clearCountCached;
-                preferences.record(N, colorCount, ballsPerTurn, score);
+                longestLine = Math.max(longestLine, clearLongestCached);
+                popupScore = clearCountCached; popupTicks = 30;
 
                 clearing = false;
                 clearTicks = 0;
@@ -490,9 +611,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                     prepareNextTurnPreviews();
                     refreshAfterClear = false;
                 }
-                pushSnapshot();
-
-                if (emptyCount() == 0) { state = S_GAMEOVER; hasGame = false; }
+                completeTurn(clearLongestCached);
             }
         }
     }
@@ -508,10 +627,17 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             refreshAfterClear = started;
             if (!started) {
                 prepareNextTurnPreviews();
-                pushSnapshot();
-                if (emptyCount() == 0) { state = S_GAMEOVER; hasGame = false; }
+                completeTurn(0);
             }
         }
+    }
+
+    private void completeTurn(int lineLength) {
+        if (moves < Integer.MAX_VALUE) moves++;
+        longestLine = Math.max(longestLine, lineLength);
+        preferences.recordTurn(N, colorCount, ballsPerTurn, score, lineLength);
+        if (emptyCount() == 0) { state = S_GAMEOVER; hasGame = false; }
+        pushSnapshot(); saveStableGame();
     }
 
     // BFS + восстановление пути
@@ -560,7 +686,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private boolean startClearIfAny() {
         if (clearing) return true;
         boolean[][] mark = new boolean[N][N];
-        int total = 0;
+        int total = 0, longest = 0;
 
         // строки
         for (int r = 0; r < N; r++) {
@@ -570,7 +696,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 int s = c;
                 while (c + 1 < N && board[r][c + 1] == col) c++;
                 int len = c - s + 1;
-                if (len >= 5) { for (int x = s; x <= c; x++) if (!mark[r][x]) { mark[r][x] = true; total++; } }
+                if (len >= 5) { longest = Math.max(longest, len); for (int x = s; x <= c; x++) if (!mark[r][x]) { mark[r][x] = true; total++; } }
                 c++;
             }
         }
@@ -583,7 +709,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 int s = r;
                 while (r + 1 < N && board[r + 1][c] == col) r++;
                 int len = r - s + 1;
-                if (len >= 5) { for (int y = s; y <= r; y++) if (!mark[y][c]) { mark[y][c] = true; total++; } }
+                if (len >= 5) { longest = Math.max(longest, len); for (int y = s; y <= r; y++) if (!mark[y][c]) { mark[y][c] = true; total++; } }
                 r++;
             }
         }
@@ -597,7 +723,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 int rs = r, cs = c;
                 while (r + 1 < N && c + 1 < N && board[r + 1][c + 1] == col) { r++; c++; }
                 int len = r - rs + 1;
-                if (len >= 5) { int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc++; } }
+                if (len >= 5) { longest = Math.max(longest, len); int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc++; } }
                 r++; c++;
             }
         }
@@ -609,7 +735,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 int rs = r, cs = c;
                 while (r + 1 < N && c + 1 < N && board[r + 1][c + 1] == col) { r++; c++; }
                 int len = r - rs + 1;
-                if (len >= 5) { int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc++; } }
+                if (len >= 5) { longest = Math.max(longest, len); int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc++; } }
                 r++; c++;
             }
         }
@@ -623,7 +749,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 int rs = r, cs = c;
                 while (r + 1 < N && c - 1 >= 0 && board[r + 1][c - 1] == col) { r++; c--; }
                 int len = r - rs + 1;
-                if (len >= 5) { int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc--; } }
+                if (len >= 5) { longest = Math.max(longest, len); int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc--; } }
                 r++; c--;
             }
         }
@@ -635,7 +761,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 int rs = r, cs = c;
                 while (r + 1 < N && c - 1 >= 0 && board[r + 1][c - 1] == col) { r++; c--; }
                 int len = r - rs + 1;
-                if (len >= 5) { int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc--; } }
+                if (len >= 5) { longest = Math.max(longest, len); int rr = rs, cc = cs; while (rr <= r) { if (!mark[rr][cc]) { mark[rr][cc] = true; total++; } rr++; cc--; } }
                 r++; c--;
             }
         }
@@ -643,7 +769,14 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if (total == 0) return false;
 
         clearMark = mark;
-        clearCountCached = total;
+        clearCountCached = total; clearLongestCached = longest;
+        clearOrder = new int[N][N]; int order = 0, sumR = 0, sumC = 0;
+        for (int r = 0; r < N; r++) for (int c = 0; c < N; c++) if (mark[r][c]) {
+            clearOrder[r][c] = order++; sumR += r; sumC += c;
+        }
+        popupX = originX + sumC * cell / total + cell / 2;
+        popupY = originY + sumR * cell / total + cell / 2;
+        clearTicksMax = 6 + Math.min(total - 1, 11);
         clearTicks = 0;
         clearing = true;
         soundEffects.pop();
@@ -729,8 +862,11 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
                 board[r][c] = 0;
         selR = selC = -1;
         curR = curC = N / 2;
-        selectionTick = 0;
-        score = 0;
+        selectionTick = hintLen = invalidTicks = 0;
+        reachable = new boolean[N][N]; hintR = new int[N*N]; hintC = new int[N*N];
+        score = displayScore = popupTicks = popupScore = 0;
+        clearOrder = new int[N][N]; clearLongestCached = 0;
+        moves = longestLine = 0;
         moving = false;
         clearing = false;
         refreshAfterClear = false;
@@ -750,13 +886,14 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         clearBoard();
         hasGame = true;
         computeLayout();
-        preferences.save();
+        preferences.beginGame(N, colorCount, ballsPerTurn);
         state = S_PLAY;
         seed = newGameSeed();
         addRandomBalls(5);
         generateQueuedColors();
         prepareNextTurnPreviews();
         pushSnapshot();
+        saveStableGame();
     }
 
     private void addRandomBalls(int k) {
@@ -798,6 +935,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
         s.score = score;
         s.seed = seed;
+        s.moves = moves; s.longestLine = longestLine;
         s.curR = curR; s.curC = curC;
         s.selR = selR; s.selC = selC;
         s.state = state;
@@ -818,6 +956,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         hist[--histSize] = null;
         State s = hist[histSize - 1];
         applySnapshot(s);
+        saveStableGame();
     }
 
     private void applySnapshot(State s) {
@@ -830,11 +969,15 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             nextCol[i] = s.nCol[i];
             queuedColors[i] = s.qCol[i];
         }
-        score = s.score;
+        score = displayScore = s.score;
+        popupTicks = 0;
         seed = s.seed;
+        moves = s.moves; longestLine = s.longestLine;
         curR = s.curR; curC = s.curC;
         selR = s.selR; selC = s.selC;
         state = s.state;
+        hintLen = invalidTicks = 0;
+        refreshReachable(); refreshPathHint();
         hasGame = true;
         selectionTick = 0;
 
@@ -843,6 +986,33 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         refreshAfterClear = false;
         clearTicks = 0; clearCountCached = 0;
         clearMark = new boolean[N][N];
+    }
+
+    private void saveStableGame() {
+        if (!hasGame) { if (state == S_GAMEOVER) sessionStore.clear(); return; }
+        if (histSize == 0) return;
+        State s = hist[histSize - 1];
+        SavedGame game = new SavedGame();
+        game.size = N; game.colors = colorCount; game.balls = ballsPerTurn;
+        game.cells = s.cells; game.score = s.score; game.seed = s.seed;
+        game.moves = s.moves; game.longestLine = s.longestLine; game.curR = s.curR; game.curC = s.curC;
+        game.nextCount = s.nextCount;
+        System.arraycopy(s.nR, 0, game.nextR, 0, 3); System.arraycopy(s.nC, 0, game.nextC, 0, 3);
+        System.arraycopy(s.nCol, 0, game.nextCol, 0, 3); System.arraycopy(s.qCol, 0, game.queued, 0, 3);
+        sessionStore.save(game);
+    }
+
+    private void restoreSavedGame() {
+        SavedGame game = sessionStore.load();
+        if (game == null) return;
+        N = game.size; colorCount = game.colors; ballsPerTurn = game.balls;
+        board = new int[N][N]; pathR = new int[N*N]; pathC = new int[N*N];
+        clearBoard();
+        State s = new State(); s.cells = game.cells; s.score = game.score; s.seed = game.seed;
+        s.moves = game.moves; s.longestLine = game.longestLine; s.curR = game.curR; s.curC = game.curC;
+        s.selR = s.selC = -1; s.state = S_PLAY; s.nextCount = (byte) game.nextCount;
+        s.nR = game.nextR; s.nC = game.nextC; s.nCol = game.nextCol; s.qCol = game.queued;
+        applySnapshot(s); pushSnapshot(); state = S_TITLE; computeLayout();
     }
 
     private void render() {
@@ -854,11 +1024,15 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if (state == S_ABOUT) { drawAbout(g); flushGraphics(); return; }
         if (state == S_SETTINGS) { drawSettings(g); flushGraphics(); return; }
         if (state == S_STATS) { drawStatistics(g); flushGraphics(); return; }
+        if (state == S_HELP) { drawHelp(g); flushGraphics(); return; }
+        if (state == S_CONFIRM) { drawConfirm(g); flushGraphics(); return; }
 
         int w = getWidth();
         int totalW = previewCell * ballsPerTurn + previewGap * (ballsPerTurn - 1);
         int px = (w - totalW) / 2;
         int py = previewY;
+        String moveText = "M:" + moves;
+        if (g.getFont().stringWidth(moveText) < px - 4) { g.setColor(0xAAAAAA); g.drawString(moveText, 2, py, Graphics.TOP | Graphics.LEFT); }
 
         for (int i = 0; i < ballsPerTurn; i++) {
             int x = px + i * (previewCell + previewGap);
@@ -878,7 +1052,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             int x = originX + c * cell;
             int y = originY + r * cell;
 
-            g.setColor(0x333333);
+            g.setColor(!moving && !clearing && selR >= 0 && reachable[r][c] && board[r][c] == 0 ? 0x263F34 : 0x333333);
             g.fillRect(x, y, cell, cell);
 
             int colorIdx = board[r][c];
@@ -900,6 +1074,15 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             drawSmallBall(g, x, y, cell, COLORS[nextCol[i]]);
         }
 
+        if (!moving && !clearing && selR >= 0 && hintLen > 0) {
+            g.setColor(0xA0D8B0); g.setStrokeStyle(Graphics.DOTTED);
+            int hx = originX + selC * cell + cell / 2, hy = originY + selR * cell + cell / 2;
+            for (int i = 0; i < hintLen; i++) {
+                int nx = originX + hintC[i] * cell + cell / 2, ny = originY + hintR[i] * cell + cell / 2;
+                g.drawLine(hx, hy, nx, ny); hx = nx; hy = ny;
+            }
+            g.setStrokeStyle(Graphics.SOLID);
+        }
         if (moving && moveColor != 0) {
             int x = originX + moveC * cell;
             int y = originY + moveR * cell;
@@ -907,14 +1090,12 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         }
 
         if (clearing) {
-            int scale = (clearTicksMax - clearTicks) * 256 / clearTicksMax; // 256..0
-            if (scale < 0) scale = 0;
             for (int r = 0; r < N; r++) for (int c = 0; c < N; c++) {
                 if (!clearMark[r][c]) continue;
-                int x = originX + c * cell;
-                int y = originY + r * cell;
-                int col = COLORS[board[r][c]];
-                drawBallScaled(g, x, y, cell, col, scale);
+                int elapsed = clearTicks - Math.min(clearOrder[r][c], 11);
+                if (elapsed >= 6) continue;
+                int scale = elapsed <= 0 ? 256 : (6 - elapsed) * 256 / 6;
+                drawBallScaled(g, originX + c * cell, originY + r * cell, cell, COLORS[board[r][c]], scale);
             }
         }
 
@@ -925,12 +1106,12 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if (!moving && !clearing && selR >= 0) {
             int sx = originX + selC * cell;
             int sy = originY + selR * cell;
-            g.setColor(0xFFFF66);
+            g.setColor(invalidTicks > 0 ? 0xFF7755 : 0xFFFF66);
             g.drawRect(sx + 2, sy + 2, cell - 5, cell - 5);
         }
 
         g.setColor(0xFFFFFF);
-        g.drawString("Score: " + score, 2, 2, Graphics.TOP | Graphics.LEFT);
+        g.drawString("Score: " + displayScore, 2, 2, Graphics.TOP | Graphics.LEFT);
 
         g.drawString("Best: " + preferences.best(N, colorCount, ballsPerTurn), w - 2, 2, Graphics.TOP | Graphics.RIGHT);
         String mode = N + "x" + N + " / " + colorCount + " colors / +" + ballsPerTurn;
@@ -938,11 +1119,17 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.drawString(mode, w / 2, softBarY - g.getFont().getHeight() - 2, Graphics.TOP | Graphics.HCENTER);
         drawSoftBar(g, "Undo", "Menu");
 
+        if (popupTicks > 0) {
+            int y = Math.max(originY, popupY - (30 - popupTicks) / 2);
+            g.setColor(0x101010); g.drawString("+" + popupScore, popupX + 1, y + 1, Graphics.TOP | Graphics.HCENTER);
+            g.setColor(0xFFD24A); g.drawString("+" + popupScore, popupX, y, Graphics.TOP | Graphics.HCENTER);
+        }
         if (state == S_GAMEOVER) {
-            String a = "GAME OVER (full)";
-            int lh = g.getFont().getHeight();
-            int w1 = g.getFont().stringWidth(a);
-            g.drawString(a, (w - w1) / 2, softBarY - lh - 6, Graphics.TOP | Graphics.LEFT);
+            int lh = g.getFont().getHeight(), panelW = Math.min(w - 20, 210);
+            int y = originY + gridSizePx / 2 - lh - 10;
+            g.setColor(0x181818); g.fillRoundRect((w - panelW) / 2, y, panelW, lh * 2 + 20, 8, 8);
+            g.setColor(0xFFD24A); g.drawString("GAME OVER", w / 2, y + 6, Graphics.TOP | Graphics.HCENTER);
+            g.setColor(0xFFFFFF); g.drawString("FIRE: new / Undo", w / 2, y + lh + 10, Graphics.TOP | Graphics.HCENTER);
         }
 
         flushGraphics();
@@ -955,7 +1142,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.setColor(0x101010);
         g.fillRect(0, 0, w, h);
 
-        if (titleLogo != null) {
+        if (titleLogo != null && h >= 280) {
             int x = (w - titleLogo.getWidth()) / 2;
             int y = h / 5 - titleLogo.getHeight() / 2;
             if (y < 4) y = 4;
@@ -964,12 +1151,12 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             String t = "LINES";
             g.setColor(0xFFD24A);
             int tw = g.getFont().stringWidth(t);
-            g.drawString(t, (w - tw)/2, h/5, Graphics.TOP | Graphics.LEFT);
+            g.drawString(t, (w - tw)/2, 12, Graphics.TOP | Graphics.LEFT);
         }
 
         // пункты меню
-        String[] items = hasGame ? new String[]{"RESUME", "NEW GAME", "SETTINGS", "STATISTICS", "ABOUT", "EXIT"}
-                                 : new String[]{"START", "SETTINGS", "STATISTICS", "ABOUT", "EXIT"};
+        String[] items = hasGame ? new String[]{"RESUME", "NEW GAME", "SETTINGS", "STATISTICS", "HELP", "ABOUT", "EXIT"}
+                                 : new String[]{"START", "SETTINGS", "STATISTICS", "HELP", "ABOUT", "EXIT"};
         int lh = g.getFont().getHeight();
         int y0 = menuY();
         for (int i = 0; i < items.length; i++) {
@@ -977,7 +1164,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             g.setColor(sel ? 0xFFFFFF : 0xAAAAAA);
             int iw = g.getFont().stringWidth(items[i]);
             int ix = (w - iw)/2;
-            int iy = y0 + i * (lh + 6);
+            int iy = y0 + i * menuStep();
             g.drawString(items[i], ix, iy, Graphics.TOP | Graphics.LEFT);
 
             if (sel) {
@@ -988,7 +1175,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
         if (((titleBlink++/20) & 1) == 0) {
             g.setColor(0x808080);
-            String tip = "FIRE / Select";
+            String tip = sessionStore.storageOk ? "FIRE / Select" : "Save unavailable";
             int tw = g.getFont().stringWidth(tip);
             g.drawString(tip, (w - tw)/2, softBarY - lh - 6, Graphics.TOP | Graphics.LEFT);
         }
@@ -1016,55 +1203,112 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         drawSoftBar(g, "Back", "Back");
     }
 
-    private int menuY() { return getHeight() / 2 - getGraphics().getFont().getHeight(); }
+    private int menuStep() { return fontHeight + (getHeight() < 280 ? 1 : 4); }
+    private int menuY() {
+        int fh = fontHeight;
+        return Math.max(fh + 16, Math.min(getHeight() / 2 - fh, softBarY - menuCount() * menuStep() - fh - 12));
+    }
+
+    private void buildHelp() {
+        java.util.Vector lines = new java.util.Vector();
+        javax.microedition.lcdui.Font font = getGraphics().getFont();
+        for (int i = 0; i < HELP_TEXT.length; i++) {
+            String text = HELP_TEXT[i]; int start = 0;
+            while (start < text.length()) {
+                int end = start + 1;
+                while (end <= text.length() && font.stringWidth(text.substring(start, end)) <= getWidth() - 20) end++;
+                end = Math.max(start + 1, end - 1);
+                if (end < text.length()) { int space = text.lastIndexOf(' ', end); if (space > start) end = space; }
+                lines.addElement(text.substring(start, end)); start = end;
+                while (start < text.length() && text.charAt(start) == ' ') start++;
+            }
+        }
+        helpLines = new String[lines.size()]; lines.copyInto(helpLines);
+        helpScroll = Math.min(helpScroll, Math.max(0, helpLines.length - helpPageSize()));
+    }
+
+    private int helpPageSize() { return Math.max(1, (softBarY - 72) / (fontHeight + 4)); }
+
+    private void drawHelp(Graphics g) {
+        int w = getWidth(), fh = g.getFont().getHeight();
+        g.setColor(0xFFD24A); g.drawString("HOW TO PLAY", w / 2, 12, Graphics.TOP | Graphics.HCENTER);
+        g.setColor(0xFFFFFF);
+        for (int row = helpScroll; row < Math.min(helpLines.length, helpScroll + helpPageSize()); row++)
+            g.drawString(helpLines[row], 10, 46 + (row - helpScroll) * (fh + 4), Graphics.TOP | Graphics.LEFT);
+        g.setColor(0xAAAAAA); g.drawString("Up / Down to scroll", w / 2, softBarY - fh - 2, Graphics.TOP | Graphics.HCENTER);
+        drawSoftBar(g, "Back", "Back");
+    }
+
+    private void drawConfirm(Graphics g) {
+        int w = getWidth(), fh = g.getFont().getHeight();
+        g.setColor(0xFFD24A); g.drawString("NEW GAME?", w / 2, 20, Graphics.TOP | Graphics.HCENTER);
+        g.setColor(0xFFFFFF); g.drawString("Replace current game?", w / 2, 56, Graphics.TOP | Graphics.HCENTER);
+        g.setColor(0xAAAAAA); g.drawString("Saved turn will be lost.", w / 2, 58 + fh, Graphics.TOP | Graphics.HCENTER);
+        for (int i = 0; i < 2; i++) {
+            int y = 120 + i * 36;
+            if (confirmSel == i) { g.setColor(0x303848); g.fillRoundRect(12, y - 4, w - 24, 30, 6, 6); }
+            g.setColor(confirmSel == i ? 0xFFFFFF : 0xAAAAAA);
+            g.drawString(i == 0 ? "KEEP GAME" : "NEW GAME", w / 2, y, Graphics.TOP | Graphics.HCENTER);
+        }
+        drawSoftBar(g, "Cancel", "New");
+    }
+
+    private int settingsVisible() {
+        int fh = fontHeight;
+        int footerY = softBarY - fh * 3 - 6;
+        return Math.max(1, Math.min(SETTINGS_VISIBLE, (footerY - SETTINGS_TOP - fh) / SETTINGS_STEP + 1));
+    }
 
     private void drawSettings(Graphics g) {
         int w = getWidth();
         g.setColor(0xFFD24A);
         g.drawString("SETTINGS", w / 2, 14, Graphics.TOP | Graphics.HCENTER);
-        String[] labels = {"Board", "Colors", "New balls", "Music", "Music volume", "Effects", "Effects volume"};
+        String[] labels = {"Board", "Colors", "New balls", "Music", "Music volume", "Effects", "Effects volume", "Patterns", "Difficulty"};
+        if (w < 220) labels = new String[]{"Board", "Colors", "New balls", "Music", "Music vol.", "Effects", "FX vol.", "Patterns", "Level"};
         String[] values = {preferences.size + "x" + preferences.size,
                            "" + preferences.colors, "" + preferences.balls, preferences.music ? "On" : "Off",
-                           preferences.musicVolume + "%", preferences.effects ? "On" : "Off", preferences.effectsVolume + "%"};
-        for (int i = settingsScroll; i < Math.min(SETTINGS_COUNT, settingsScroll + SETTINGS_VISIBLE); i++) {
-            int y = 50 + (i - settingsScroll) * 26;
-            if (settingsSel == i) { g.setColor(0x303848); g.fillRoundRect(8, y - 4, w - 16, 24, 6, 6); }
+                           preferences.musicVolume + "%", preferences.effects ? "On" : "Off", preferences.effectsVolume + "%", preferences.patterns ? "On" : "Off", presetName()};
+        for (int i = settingsScroll; i < Math.min(SETTINGS_COUNT, settingsScroll + settingsVisible()); i++) {
+            int y = SETTINGS_TOP + (i - settingsScroll) * SETTINGS_STEP;
+            if (settingsSel == i) { g.setColor(0x303848); g.fillRoundRect(8, y - 1, w - 16, 20, 6, 6); }
             g.setColor(settingsSel == i ? 0xFFFFFF : 0xAAAAAA);
             g.drawString(labels[i], 16, y, Graphics.TOP | Graphics.LEFT);
             g.drawString("< " + values[i] + " >", w - 16, y, Graphics.TOP | Graphics.RIGHT);
         }
         g.setColor(0xAAAAAA);
         int fh = g.getFont().getHeight();
-        g.drawString("Up/Down, Left/Right: change", w / 2, softBarY - fh * 3 - 6, Graphics.TOP | Graphics.HCENTER);
-        String note = (soundtrack.failed() || soundEffects.failed()) ? "Audio unavailable on device" : "Rules apply to NEW GAME";
+        g.drawString(w < 220 ? "Arrows: change" : "Up/Down, Left/Right: change", w / 2, softBarY - fh * 3 - 6, Graphics.TOP | Graphics.HCENTER);
+        String note = (soundtrack.failed() || soundEffects.failed()) ? "Audio unavailable" : w < 220 ? "Rules: NEW GAME" : "Rules apply to NEW GAME";
         g.drawString(note, w / 2, softBarY - fh * 2 - 4, Graphics.TOP | Graphics.HCENTER);
-        g.drawString(preferences.storageOk ? "Save applies / Back cancels" : "Storage unavailable!", w / 2,
+        g.drawString(preferences.storageOk ? (w < 220 ? "Save / Back: cancel" : "Save applies / Back cancels") : "Storage unavailable!", w / 2,
                      softBarY - fh - 2, Graphics.TOP | Graphics.HCENTER);
         drawSoftBar(g, "Save", "Back");
     }
 
     private int statsPageSize() {
-        return Math.max(1, (softBarY - 76) / (getGraphics().getFont().getHeight() * 2 + 12));
+        return Math.max(1, (softBarY - 76) / (fontHeight * 3 + 12));
     }
 
     private void drawStatistics(Graphics g) {
         int w = getWidth(), fh = g.getFont().getHeight();
         g.setColor(0xFFD24A);
-        g.drawString("RECORDS", w / 2, 12, Graphics.TOP | Graphics.HCENTER);
+        g.drawString("STATISTICS", w / 2, 12, Graphics.TOP | Graphics.HCENTER);
         g.setColor(0xAAAAAA);
-        g.drawString("Separate best for each mode", w / 2, 16 + fh, Graphics.TOP | Graphics.HCENTER);
+        g.drawString(w < 220 ? "G:games M:moves L:line" : "G games / M moves / L line", w / 2, 16 + fh, Graphics.TOP | Graphics.HCENTER);
         if (statsCount == 0) {
-            g.drawString("No records yet", w / 2, getHeight() / 2, Graphics.TOP | Graphics.HCENTER);
-            g.drawString("Clear a line to set one!", w / 2, getHeight() / 2 + fh + 4, Graphics.TOP | Graphics.HCENTER);
+            g.drawString("No games yet", w / 2, getHeight() / 2, Graphics.TOP | Graphics.HCENTER);
+            g.drawString("Start a game to begin", w / 2, getHeight() / 2 + fh + 4, Graphics.TOP | Graphics.HCENTER);
         }
         int limit = Math.min(statsCount, statsScroll + statsPageSize());
         for (int row = statsScroll; row < limit; row++) {
-            int i = statsOrder[row], y = 54 + (row - statsScroll) * (fh * 2 + 12);
+            int i = statsOrder[row], y = 54 + (row - statsScroll) * (fh * 3 + 12);
             g.setColor(row == 0 ? 0xFFD24A : 0xFFFFFF);
             g.drawString((row + 1) + ". " + preferences.scoreAt(i) + " points", 12, y, Graphics.TOP | Graphics.LEFT);
             g.setColor(0xAAAAAA);
             String mode = GameStore.sizeAt(i) + "x" + GameStore.sizeAt(i) + " / " + GameStore.colorsAt(i) + " colors / +" + GameStore.ballsAt(i);
             g.drawString(mode, 12, y + fh + 2, Graphics.TOP | Graphics.LEFT);
+            String details = "G:" + preferences.gamesAt(i) + "  M:" + preferences.movesAt(i) + "  L:" + preferences.lineAt(i);
+            g.drawString(details, 12, y + fh * 2 + 4, Graphics.TOP | Graphics.LEFT);
         }
         g.setColor(0xAAAAAA);
         String footer = !preferences.storageOk ? "Records not saved!" : statsCount > statsPageSize() ? "Up / Down to scroll" : "Saved on this device";
@@ -1080,7 +1324,8 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         int stretch = phase >= 3 && phase <= 9 ? Math.max(1, diameter / 16) : 0;
         int bw = diameter + squash - stretch;
         int bh = diameter - squash + stretch;
-        int bx = x + (size - bw) / 2, by = y + size * 7 / 8 - bh - lift;
+        int shake = invalidTicks > 0 ? ((invalidTicks & 1) == 0 ? -2 : 2) : 0;
+        int bx = x + (size - bw) / 2 + shake, by = y + size * 7 / 8 - bh - lift;
         int cx = g.getClipX(), cy = g.getClipY(), cw = g.getClipWidth(), ch = g.getClipHeight();
         g.clipRect(x + 1, y + 1, size - 2, size - 2);
         g.setColor(0x181818);
@@ -1088,6 +1333,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.setColor(rgb); g.fillArc(bx, by, bw, bh, 0, 360);
         g.setColor(0x202020); g.drawArc(bx, by, bw, bh, 0, 360);
         g.setColor(0xFFFFFF); g.fillArc(bx + 2, by + 2, Math.max(2, bw / 2), Math.max(2, bh / 2), 0, 180);
+        drawPattern(g, bx + bw / 2, by + bh / 2, Math.min(bw, bh), rgb);
         g.setClip(cx, cy, cw, ch);
     }
 
@@ -1117,6 +1363,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
         g.setColor(0xFFFFFF);
         g.fillArc(cx - r + 3, cy - r + 3, r, r, 0, 180);
+        drawPattern(g, cx, cy, r * 2, rgb);
     }
 
     private void drawBallScaled(Graphics g, int x, int y, int size, int rgb, int scale) {
@@ -1133,6 +1380,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.drawArc(cx - r, cy - r, r * 2, r * 2, 0, 360);
         int hl = (r <= 4) ? r/2 : r/2 + 1;
         if (hl > 0) { g.setColor(0xFFFFFF); g.fillArc(cx - r + 3, cy - r + 3, hl, hl, 0, 180); }
+        drawPattern(g, cx, cy, r * 2, rgb);
     }
 
     private void drawSmallBall(Graphics g, int x, int y, int size, int rgb) {
@@ -1144,6 +1392,22 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.fillArc(cx - r, cy - r, r * 2, r * 2, 0, 360);
         g.setColor(0x202020);
         g.drawArc(cx - r, cy - r, r * 2, r * 2, 0, 360);
+        drawPattern(g, cx, cy, r * 2, rgb);
+    }
+
+    private void drawPattern(Graphics g, int x, int y, int diameter, int rgb) {
+        if (!preferences.patterns || diameter < 6) return;
+        int color = 0;
+        for (int i = 1; i < COLORS.length; i++) if (COLORS[i] == rgb) { color = i; break; }
+        int r = Math.max(1, Math.min(3, diameter / 4));
+        g.setColor(color == 4 || color == 6 || color == 7 ? 0x101010 : 0xFFFFFF);
+        if (color == 1) g.fillArc(x - 1, y - 1, 3, 3, 0, 360);
+        else if (color == 2) g.drawLine(x - r, y, x + r, y);
+        else if (color == 3) g.drawLine(x, y - r, x, y + r);
+        else if (color == 4) { g.drawLine(x - r, y, x + r, y); g.drawLine(x, y - r, x, y + r); }
+        else if (color == 5) { g.drawLine(x - r, y - r, x + r, y + r); g.drawLine(x - r, y + r, x + r, y - r); }
+        else if (color == 6) g.drawArc(x - r, y - r, r * 2, r * 2, 0, 360);
+        else if (color == 7) g.drawRect(x - r, y - r, r * 2, r * 2);
     }
 
     public void debugFillDemo() { enqueue(E_DEMO, 0, 0); }

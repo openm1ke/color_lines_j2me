@@ -39,9 +39,13 @@ def jdk_tool(name):
     return str(Path(os.environ['JAVA_HOME']) / 'bin' / name) if os.environ.get('JAVA_HOME') else name
 out=Path('build/tests');out.mkdir(parents=True, exist_ok=True)
 cp=os.pathsep.join(['build/classes','tools/freej2me.jar'])
-subprocess.run([jdk_tool('javac'),'-encoding','UTF-8','-cp',cp,'-d',str(out),'tests/GameplayCheck.java'],check=True)
+subprocess.run([jdk_tool('javac'),'-encoding','UTF-8','-cp',cp,'-d',str(out),*[str(p) for p in sorted(Path('tests').glob('*.java'))]],check=True)
 result=subprocess.run([jdk_tool('java'),'-Dfile.encoding=ISO_8859_1','-Dlines.store=lines-automated-check','-Djava.awt.headless=true','-cp',os.pathsep.join([str(out),cp]),'GameplayCheck'],check=False,timeout=60,capture_output=True,text=True)
 print(result.stdout, end='')
 print(result.stderr, end='')
 result.check_returncode()
 assert 'ALL GAMEPLAY CHECKS PASSED' in result.stdout, 'Game checks exited before completion'
+
+features=subprocess.run([jdk_tool('java'),'-Dfile.encoding=ISO_8859_1','-Dlines.store=lines-feature-check','-Djava.awt.headless=true','-cp',os.pathsep.join([str(out),cp]),'FeatureCheck'],check=False,timeout=60,capture_output=True,text=True)
+print(features.stdout,end='');print(features.stderr,end='');features.check_returncode()
+assert 'ALL FEATURE CHECKS PASSED' in features.stdout

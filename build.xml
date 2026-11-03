@@ -120,5 +120,8 @@ MIDlet-Jar-Size: ${jar.size}
   <target name="test" depends="package" description="Check packaging and gameplay regressions">
     <exec executable="python3" failonerror="true"><arg value="tools/check.py"/></exec>
   </target>
+  <target name="check-emulator" depends="test" description="Run visible FreeJ2ME scenarios in isolated test saves">
+    <exec executable="python3" failonerror="true"><arg value="tools/emulator_check.py"/></exec>
+  </target>
 </project>
 

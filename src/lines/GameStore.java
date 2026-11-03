@@ -13,9 +13,10 @@ public final class GameStore {
     public int size = 9, colors = 5, balls = 3;
     public boolean music;
     public int musicVolume = 35, effectsVolume = 70;
-    public boolean effects = true;
+    public boolean effects = true, patterns;
     public boolean storageOk = true;
     private final int[] best = new int[45];
+    private final int[] games = new int[45], turns = new int[45], line = new int[45];
     private final String name;
 
     public GameStore() {
@@ -24,6 +25,8 @@ public final class GameStore {
         name = override == null ? "lines-preferences-v1" : override;
         load();
     }
+
+    public String sessionName() { return name + "-game"; }
 
     public static int index(int size, int colors, int balls) {
         int s = size == 7 ? 0 : size == 9 ? 1 : size == 11 ? 2 : -1;
@@ -34,6 +37,25 @@ public final class GameStore {
     public int best(int size, int colors, int balls) {
         int i = index(size, colors, balls);
         return i < 0 ? 0 : best[i];
+    }
+
+    public int gamesAt(int i) { return games[i]; }
+    public int movesAt(int i) { return turns[i]; }
+    public int lineAt(int i) { return line[i]; }
+
+    public void beginGame(int size, int colors, int balls) {
+        int i = index(size, colors, balls);
+        if (i < 0) return;
+        if (games[i] < Integer.MAX_VALUE) games[i]++;
+        save();
+    }
+
+    public void recordTurn(int size, int colors, int balls, int score, int longest) {
+        int i = index(size, colors, balls);
+        if (i < 0 || score < 0 || longest < 0 || longest > size) return;
+        if (turns[i] < Integer.MAX_VALUE) turns[i]++;
+        best[i] = Math.max(best[i], score); line[i] = Math.max(line[i], longest);
+        save();
     }
 
     public int scoreAt(int i) { return best[i]; }
@@ -56,7 +78,7 @@ public final class GameStore {
             if (store.getNumRecords() == 0) return;
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(store.getRecord(1)));
             int version = in.readInt();
-            if (version != MAGIC && version != MAGIC + 1) throw new java.io.IOException("Invalid version");
+            if (version < MAGIC || version > MAGIC + 3) throw new java.io.IOException("Invalid version");
             int s = in.readUnsignedByte(), c = in.readUnsignedByte(), b = in.readUnsignedByte();
             boolean m = in.readBoolean();
             if (index(s, c, b) < 0) throw new java.io.IOException("Invalid settings");
@@ -66,10 +88,21 @@ public final class GameStore {
                 if (scores[i] < 0) throw new java.io.IOException("Invalid score");
             }
             int mv = 35, ev = 70; boolean fx = true;
-            if (version == MAGIC + 1) {
+            if (version >= MAGIC + 1) {
                 mv = in.readUnsignedByte(); ev = in.readUnsignedByte(); fx = in.readBoolean();
                 if (mv > 100 || ev > 100) throw new java.io.IOException("Invalid volume");
             }
+            boolean marks = version >= MAGIC + 2 ? in.readBoolean() : false;
+            int[] played = new int[45], moved = new int[45], longest = new int[45];
+            if (version >= MAGIC + 3) for (int i = 0; i < 45; i++) {
+                played[i] = in.readInt(); moved[i] = in.readInt(); longest[i] = in.readInt();
+                if (played[i] < 0 || moved[i] < 0 || longest[i] < 0 || longest[i] > sizeAt(i))
+                    throw new java.io.IOException("Invalid statistics");
+            }
+            if (in.available() != 0) throw new java.io.IOException("Unexpected settings data");
+            System.arraycopy(played, 0, games, 0, 45); System.arraycopy(moved, 0, turns, 0, 45);
+            System.arraycopy(longest, 0, line, 0, 45);
+            patterns = marks;
             musicVolume = mv; effectsVolume = ev; effects = fx;
             size = s; colors = c; balls = b; music = m;
             System.arraycopy(scores, 0, best, 0, best.length);
@@ -86,12 +119,14 @@ public final class GameStore {
             if (index(size, colors, balls) < 0) throw new java.io.IOException("Invalid settings");
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             DataOutputStream out = new DataOutputStream(bytes);
-            out.writeInt(MAGIC + 1);
+            out.writeInt(MAGIC + 3);
             out.writeByte(size); out.writeByte(colors); out.writeByte(balls); out.writeBoolean(music);
             for (int i = 0; i < best.length; i++) out.writeInt(best[i]);
             out.writeByte(AudioVolume.clamp(musicVolume));
             out.writeByte(AudioVolume.clamp(effectsVolume));
             out.writeBoolean(effects);
+            out.writeBoolean(patterns);
+            for (int i = 0; i < 45; i++) { out.writeInt(games[i]); out.writeInt(turns[i]); out.writeInt(line[i]); }
             out.flush();
             byte[] data = bytes.toByteArray();
             store = RecordStore.openRecordStore(name, true);

@@ -6,4 +6,5 @@ https://opengameart.org/sites/default/files/pop3.wav
 License: CC0 1.0 Universal
 https://creativecommons.org/publicdomain/zero/1.0/
 Downloaded 2026-11-03. Converted stereo 44.1 kHz WAV to mono 16 kHz 16-bit PCM WAV
-for small J2ME packages. No other modifications. Credit is voluntary under CC0.
+for small J2ME packages. WAV metadata removed to produce canonical 44-byte PCM
+headers compatible with FreeJ2ME. Sample data otherwise unchanged. Credit is voluntary under CC0.

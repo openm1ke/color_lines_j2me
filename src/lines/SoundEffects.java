@@ -1,6 +1,10 @@
 package lines;
 
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import javax.microedition.media.MediaException;
 import javax.microedition.media.Manager;
 import javax.microedition.media.Player;
 
@@ -31,6 +35,19 @@ public final class SoundEffects implements Runnable {
     public boolean failed() { return failed; }
     public synchronized void close() { closed = true; pending = false; notifyAll(); }
 
+    private InputStream openPop(int number) throws IOException {
+        InputStream resource = getClass().getResourceAsStream("/sfx/pop" + number + ".wav");
+        if (resource == null) throw new IOException("Pop resource missing");
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            int read;
+            while ((read = resource.read(buffer)) != -1) bytes.write(buffer, 0, read);
+            // FreeJ2ME's WAV reader uses mark/reset and available() on the stream.
+            return new ByteArrayInputStream(bytes.toByteArray());
+        } finally { resource.close(); }
+    }
+
     public void run() {
         Player[] players = new Player[3];
         InputStream[] streams = new InputStream[3];
@@ -49,13 +66,17 @@ public final class SoundEffects implements Runnable {
                     }
                     pending = false;
                 }
-                int i = variant++ % players.length;
+                int i = variant;
+                variant = (variant + 1) % players.length;
                 try {
                     if (players[i] == null) {
-                        streams[i] = getClass().getResourceAsStream("/sfx/pop" + (i + 1) + ".wav");
-                        if (streams[i] == null) throw new java.io.IOException("Pop resource missing");
+                        streams[i] = openPop(i + 1);
                         players[i] = Manager.createPlayer(streams[i], "audio/x-wav");
-                        players[i].realize(); players[i].prefetch(); players[i].setLoopCount(1);
+                        players[i].realize(); players[i].prefetch();
+                        // Some emulators log decode failures without throwing MediaException.
+                        if (players[i].getState() != Player.PREFETCHED)
+                            throw new MediaException("Cannot decode pop sound");
+                        players[i].setLoopCount(1);
                     }
                     synchronized (this) {
                         if (!closed && !suspended && enabled && volume > 0) {

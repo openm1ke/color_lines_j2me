@@ -339,6 +339,27 @@ public class GameplayCheck {
         prefs.colors=5;prefs.musicVolume=35;prefs.save();c.stop();
         System.out.println("PASS: distinct Save/Back keys and clicks, cancel restores live audio and preserves records");
     }
+    static void freej2mePopDecoder() throws Exception {
+        try(java.util.zip.ZipFile jar=new java.util.zip.ZipFile("dist/lines.jar")) {
+            for(int n=1;n<=3;n++) {
+                byte[] wav=jar.getInputStream(jar.getEntry("sfx/pop"+n+".wav")).readAllBytes();
+                int[] h=javax.microedition.media.decoders.WAVTools.readHeader(new java.io.ByteArrayInputStream(wav));
+                check(h[0]==1&&h[1]==16000&&h[2]==1&&h[4]==16,"FreeJ2ME misread WAV format");
+                check(h[5]==wav.length-44,"FreeJ2ME mistook metadata for PCM length");
+                byte[] pcm=Arrays.copyOfRange(wav,44,wav.length);
+                byte[] resampled=javax.microedition.media.decoders.WAVTools.upsample(pcm,h[1],44100,(short)h[2],(short)h[4],h[5]);
+                try(javax.sound.sampled.AudioInputStream decoded=javax.sound.sampled.AudioSystem.getAudioInputStream(new java.io.ByteArrayInputStream(resampled))) {
+                    double duration=decoded.getFrameLength()/decoded.getFormat().getFrameRate();
+                    double expected=pcm.length/32000.0;
+                    check(duration>0.05&&duration<0.15&&Math.abs(duration-expected)<0.001,"FreeJ2ME truncated pop duration");
+                    byte[] sound=decoded.readAllBytes();int peak=0;
+                    for(int j=0;j+1<sound.length;j+=2)peak=Math.max(peak,Math.abs((short)((sound[j]&255)|(sound[j+1]<<8))));
+                    check(peak>1000,"FreeJ2ME decoded silence");
+                }
+            }
+        }
+        System.out.println("PASS: all three packaged pops decode through FreeJ2ME with correct duration and nonzero PCM");
+    }
     public static void main(String[] args) {
         try {
             Mobile.minLogLevel=Mobile.LOG_ERROR;
@@ -346,7 +367,7 @@ public class GameplayCheck {
             check(p.load(new java.io.File("dist/lines.jar").toURI().toString()),"cannot load packaged MIDlet");
             try { javax.microedition.rms.RecordStore.deleteRecordStore("lines-automated-check"); } catch(Exception ignored) {}
             new LinesMidlet();
-            variedStarts();initialUndo();spawnClear(false);spawnClear(true);occupiedPreview();boundedHistory();exitStopsThread();queuedInput();queueBoundsAndExit();concurrentCallbacks();settingsAndModes();persistentRecords();bounceAndPreviews();optionalAudioFailure();audioPreferencesAndMigration();volumeControlAndEffects();settingsSaveAndBack();
+            variedStarts();initialUndo();spawnClear(false);spawnClear(true);occupiedPreview();boundedHistory();exitStopsThread();queuedInput();queueBoundsAndExit();concurrentCallbacks();settingsAndModes();persistentRecords();bounceAndPreviews();optionalAudioFailure();audioPreferencesAndMigration();volumeControlAndEffects();settingsSaveAndBack();freej2mePopDecoder();
             System.out.println("ALL GAMEPLAY CHECKS PASSED");System.exit(0);
         }catch(Throwable e){e.printStackTrace();System.exit(1);}
     }

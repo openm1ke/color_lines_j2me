@@ -17,7 +17,12 @@ with zipfile.ZipFile(jar) as z:
     assert 'CC0' in z.read('music/LICENSE.txt').decode()
     assert 'CC0' in z.read('sfx/LICENSE.txt').decode()
     for n in range(1, 4):
-        assert z.read(f'sfx/pop{n}.wav').startswith(b'RIFF')
+        pcm = z.read(f'sfx/pop{n}.wav')
+        assert pcm == Path(f'res/sfx/pop{n}.wav').read_bytes()
+        # This FreeJ2ME version assumes a 44-byte WAV header and cannot skip LIST chunks.
+        assert pcm[:4] == b'RIFF' and pcm[12:16] == b'fmt ' and pcm[36:40] == b'data'
+        assert struct.unpack_from('<I', pcm, 16)[0] == 16
+        assert struct.unpack_from('<I', pcm, 40)[0] == len(pcm) - 44
         with wave.open(f'res/sfx/pop{n}.wav') as sound:
             assert sound.getnchannels() == 1 and sound.getsampwidth() == 2 and sound.getframerate() == 16000
             assert 0.02 < sound.getnframes() / sound.getframerate() < 0.3

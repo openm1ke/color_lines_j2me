@@ -2,24 +2,24 @@
 id = "user:lines-run"
 name = "Lines — FreeJ2ME 240x320"
 kind = "shell"
-command = "python3"
-args = ["antw", "run"]
+command = 'C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.4/jbr/bin/java.exe'
+args = ["tools/AntBootstrap.java", "run"]
 cwd = "."
 
 [[configurations]]
 id = "user:lines-build"
 name = "Lines — Build JAR + JAD"
 kind = "shell"
-command = "python3"
-args = ["antw", "package"]
+command = 'C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.4/jbr/bin/java.exe'
+args = ["tools/AntBootstrap.java", "package"]
 cwd = "."
 
 [[configurations]]
 id = "user:lines-test"
 name = "Lines — Check"
 kind = "shell"
-command = "python3"
-args = ["antw", "test"]
+command = 'C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.4/jbr/bin/java.exe'
+args = ["tools/AntBootstrap.java", "test"]
 cwd = "."
 is-test = true
 
@@ -27,15 +27,15 @@ is-test = true
 id = "user:lines-clean"
 name = "Lines — Clean"
 kind = "shell"
-command = "python3"
-args = ["antw", "clean"]
+command = 'C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.4/jbr/bin/java.exe'
+args = ["tools/AntBootstrap.java", "clean"]
 cwd = "."
 
 [[configurations]]
 id = "user:lines-emulator-check"
 name = "Lines — Emulator checks"
 kind = "shell"
-command = "python3"
-args = ["antw", "check-emulator"]
+command = 'C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.4/jbr/bin/java.exe'
+args = ["tools/AntBootstrap.java", "check-emulator"]
 cwd = "."
 is-test = true

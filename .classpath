@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <classpath>
 	<classpathentry kind="src" path="src"/>
-	<classpathentry kind="lib" path="lib/cldcapi11.jar"/>
-	<classpathentry kind="lib" path="lib/midpapi20.jar"/>
+	<classpathentry kind="lib" path="lib/cldcapi11.jar" sourcepath="/home/michael/.m2/repository/org/microemu/cldcapi11/2.0.3/cldcapi11-2.0.3-sources.jar"/>
+	<classpathentry kind="lib" path="lib/midpapi20.jar" sourcepath="/home/michael/.m2/repository/org/microemu/midpapi20/2.0.4/midpapi20-2.0.4-sources.jar"/>
 	<classpathentry kind="output" path="build/ide-classes"/>
 </classpath>

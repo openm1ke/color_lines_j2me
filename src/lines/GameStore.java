@@ -27,6 +27,7 @@ public final class GameStore {
     }
 
     public String sessionName() { return name + "-game"; }
+    public String progressName() { return name + "-progress"; }
 
     public static int index(int size, int colors, int balls) {
         int s = size == 7 ? 0 : size == 9 ? 1 : size == 11 ? 2 : -1;

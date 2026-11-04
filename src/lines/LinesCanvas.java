@@ -8,24 +8,38 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     public interface Host { void onExitRequested(); }
     private final Host host;
+    private javax.microedition.lcdui.Display display;
+    public void setDisplay(javax.microedition.lcdui.Display value) { display = value; }
+    private void pulse(int duration) {
+        if (!progress.vibration || display == null || paused || stopped) return;
+        try { display.vibrate(duration); } catch (Exception ignored) {}
+    }
 
     private static final int S_TITLE = 0;
     private static final int S_PLAY  = 1;
     private static final int S_ABOUT = 2;
     private static final int S_GAMEOVER = 3;
     private static final int S_SETTINGS = 4, S_STATS = 5, S_HELP = 6, S_CONFIRM = 7;
+    private static final int S_AWARDS = 8, S_DAILY = 9;
     private final GameStore preferences = new GameStore();
+    private final ProgressStore progress = new ProgressStore(preferences.progressName());
     private final SessionStore sessionStore = new SessionStore(preferences.sessionName());
     private int moves, longestLine;
+    private int startingBest, recordTicks;
+    private boolean recordCelebrated;
+    private int dailyDay, selectedDailyDay, pendingDailyDay, awardsScroll, noticeTicks;
+    private String notice = "";
+    private boolean threatened;
+    private int heldDirection, heldTicks, callbackKeys, callbackPress, overflowReleases;
     private final BallKing king = new BallKing();
     private final Soundtrack soundtrack = new Soundtrack();
     private final SoundEffects soundEffects = new SoundEffects();
     private int colorCount = 5, ballsPerTurn = 3;
     private boolean hasGame;
     private int settingsSel, settingsScroll, statsScroll, statsCount;
-    private final int[] settingsBefore = new int[8];
+    private final int[] settingsBefore = new int[10];
     private boolean settingsEditing;
-    private static final int SETTINGS_COUNT = 9, SETTINGS_VISIBLE = 9;
+    private static final int SETTINGS_COUNT = 11, SETTINGS_VISIBLE = 9;
     private static final int SETTINGS_TOP = 40, SETTINGS_STEP = 21;
     private final int[] statsOrder = new int[45];
     private int selectionTick, helpScroll, confirmSel;
@@ -38,14 +52,18 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         "Undo returns one turn.", "Menu pauses your game.", "Resume loads the last saved turn.",
         "New Game asks before replacing a game.", "Rules change on New Game.",
         "Patterns identify colors.", "Music and effects are separate.",
-        "Save keeps settings.", "Back cancels settings."
+        "Save keeps settings.", "Back cancels settings.",
+        "2/4/6/8 move, 5 selects.", "Hold a direction to repeat.",
+        "PB marks your previous record.", "Retry keeps the same rules.", "1 also undoes a game over.",
+        "Daily uses the UTC date and fixed rules.", "Daily scores are separate.",
+        "Achievements unlock king outfits.", "Choose outfits and vibration in Settings."
     };
     private static final int[] BOUNCE = {0, 0, 1, 3, 5, 7, 8, 8, 7, 5, 3, 1, 0, 0, 0, 0};
     private int state = S_TITLE;
     private Thread loop;
     private volatile boolean running = false, paused = false;
     // Callbacks only publish requests; tick() owns all gameplay and drawing.
-    private static final int E_KEY = 1, E_POINTER = 2, E_UNDO = 3, E_DEMO = 4, E_HOVER = 5;
+    private static final int E_KEY = 1, E_POINTER = 2, E_UNDO = 3, E_DEMO = 4, E_HOVER = 5, E_RELEASE = 6;
     private static final int INPUT_CAPACITY = 32;
     private final int[] eventType = new int[INPUT_CAPACITY];
     private final int[] eventX = new int[INPUT_CAPACITY];
@@ -63,7 +81,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private int previewCell = 0;
     private int previewY = 0;
     private int previewGap = 2;
-    private Image titleLogo = null;
+    private Image titleLogo = null, fittedTitleLogo;
     private int menuSel = 0; // 0=START, 1=ABOUT
     private int titleBlink = 0;
     private int curR = 4, curC = 4;
@@ -121,6 +139,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         byte[] qCol;
         int score, seed, moves, longestLine;
         int curR, curC, selR, selC, state;
+        boolean threatened;
     }
     private final State[] hist = new State[128];
     private int histSize = 0;
@@ -160,6 +179,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         int kingWidth = w >= 300 ? 56 : w >= 220 ? 35 : 28;
         king.layout(originX + gridSizePx + kingGap, originY + gridSizePx - 2 * kingScale,
                     gridSizePx - 42 * kingScale, kingScale, score, kingWidth);
+        king.setSkin(progress.skin);
         if (state == S_HELP) buildHelp();
     }
 
@@ -241,6 +261,8 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         }
         if (resetKeys) {
             keysPrev = getKeyStates();
+            heldDirection = heldTicks = 0;
+            callbackKeys = callbackPress = overflowReleases = 0;
             resetKeys = false;
         }
         // Process only this frame's batch; callbacks cannot change it mid-frame.
@@ -255,8 +277,10 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             else if (type == E_UNDO) undoNow();
             else if (type == E_DEMO) fillDemoNow();
             else if (type == E_HOVER) handleHover(eventX[at], eventY[at]);
+            else if (type == E_RELEASE) callbackKeys &= ~keyMask(eventX[at]);
         }
         if (stopped) return;
+        callbackKeys &= ~overflowReleases; overflowReleases = 0;
         input();
         updateAnimation();
         render();
@@ -267,6 +291,18 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             requestExit();
         } else enqueue(E_KEY, keyCode, 0);
     }
+    protected synchronized void keyReleased(int keyCode) {
+        if (stopped || paused) return;
+        if (eventCount == INPUT_CAPACITY) overflowReleases |= keyMask(keyCode);
+        else enqueue(E_RELEASE, keyCode, 0);
+    }
+
+    private int keyMask(int keyCode) {
+        if (keyCode == -6 || keyCode == -7 || keyCode == KEY_NUM1) return 0;
+        int action;
+        try { action = getGameAction(keyCode); } catch (IllegalArgumentException ignored) { return 0; }
+        return action == UP ? UP_PRESSED : action == DOWN ? DOWN_PRESSED : action == LEFT ? LEFT_PRESSED : action == RIGHT ? RIGHT_PRESSED : action == FIRE ? FIRE_PRESSED : 0;
+    }
 
     private void back() {
         if (state == S_TITLE) { exitNow(); return; }
@@ -275,6 +311,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             preferences.balls = settingsBefore[2]; preferences.music = settingsBefore[3] != 0;
             preferences.musicVolume = settingsBefore[4]; preferences.effects = settingsBefore[5] != 0;
             preferences.effectsVolume = settingsBefore[6]; preferences.patterns = settingsBefore[7] != 0;
+            progress.vibration = settingsBefore[8] != 0; progress.skin = settingsBefore[9]; king.setSkin(progress.skin);
             soundtrack.setVolume(preferences.musicVolume);
             soundtrack.setActive(preferences.music);
             soundEffects.configure(preferences.effects, preferences.effectsVolume);
@@ -282,6 +319,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         }
         state = S_TITLE;
         menuSel = 0;
+        pendingDailyDay = 0;
     }
 
     private void enterSettings() {
@@ -289,6 +327,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         settingsBefore[2] = preferences.balls; settingsBefore[3] = preferences.music ? 1 : 0;
         settingsBefore[4] = preferences.musicVolume; settingsBefore[5] = preferences.effects ? 1 : 0;
         settingsBefore[6] = preferences.effectsVolume; settingsBefore[7] = preferences.patterns ? 1 : 0;
+        settingsBefore[8] = progress.vibration ? 1 : 0; settingsBefore[9] = progress.skin;
         settingsEditing = true;
         state = S_SETTINGS;
         settingsSel = settingsScroll = 0;
@@ -296,16 +335,20 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     private void saveSettings() {
         preferences.save();
-        if (!preferences.storageOk) return;
+        progress.save();
+        if (!preferences.storageOk || !progress.storageOk) return;
         settingsEditing = false;
         state = S_TITLE;
         menuSel = 0;
     }
 
     private void handleKey(int keyCode) {
+        int mask = keyMask(keyCode);
+        if (mask != 0) { callbackPress |= mask & ~callbackKeys; callbackKeys |= mask; return; }
+        if (state == S_GAMEOVER && keyCode == -6) { retryGame(); return; }
         if (state == S_CONFIRM) {
             if (keyCode == -6) back();
-            else if (keyCode == -7) startNewGame();
+            else if (keyCode == -7) confirmNewGame();
             return;
         }
         if (keyCode == -7) { back(); return; }
@@ -313,14 +356,16 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             if (keyCode == -6) titleSelect();
         } else if (state == S_SETTINGS) {
             if (keyCode == -6) saveSettings();
-        } else if (state == S_STATS || state == S_ABOUT || state == S_HELP) {
+        } else if (state == S_DAILY) {
+            if (keyCode == -6) requestDaily();
+        } else if (state == S_STATS || state == S_ABOUT || state == S_HELP || state == S_AWARDS) {
             if (keyCode == -6) back();
         } else if (!moving && !clearing) {
             if (keyCode == -6 || keyCode == KEY_NUM1 || keyCode == 'u' || keyCode == 'U') undoNow();
         }
     }
 
-    private int menuCount() { return hasGame ? 7 : 6; }
+    private int menuCount() { return hasGame ? 9 : 8; }
 
     private void adjustSetting(int delta) {
         if (settingsSel == 0) {
@@ -344,9 +389,13 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             preferences.effectsVolume = AudioVolume.clamp(preferences.effectsVolume + delta * 5);
             soundEffects.configure(preferences.effects, preferences.effectsVolume);
         } else if (settingsSel == 7) preferences.patterns = !preferences.patterns;
-        else {
+        else if (settingsSel == 8) {
             int preset = presetIndex();
             applyPreset(preset < 0 ? (delta > 0 ? 0 : 2) : (preset + delta + 3) % 3);
+        } else if (settingsSel == 9) progress.vibration = !progress.vibration;
+        else {
+            progress.skin = (progress.skin + delta + progress.skins()) % progress.skins();
+            king.setSkin(progress.skin);
         }
     }
 
@@ -375,8 +424,9 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     }
 
     private void input() {
-        int ks = getKeyStates();
-        int press = ks & ~keysPrev;
+        int ks = getKeyStates() | callbackKeys;
+        int press = (ks & ~keysPrev) | callbackPress;
+        callbackPress = 0;
         keysPrev = ks;
 
         if (state == S_TITLE) {
@@ -388,12 +438,18 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
         if (state == S_CONFIRM) {
             if ((press & (UP_PRESSED | DOWN_PRESSED | LEFT_PRESSED | RIGHT_PRESSED)) != 0) confirmSel = 1 - confirmSel;
-            if ((press & FIRE_PRESSED) != 0) { if (confirmSel == 1) startNewGame(); else back(); }
+            if ((press & FIRE_PRESSED) != 0) { if (confirmSel == 1) confirmNewGame(); else back(); }
             return;
         }
         if (state == S_HELP) {
             if ((press & (UP_PRESSED | LEFT_PRESSED)) != 0 && helpScroll > 0) helpScroll--;
             if ((press & (DOWN_PRESSED | RIGHT_PRESSED)) != 0 && helpScroll + helpPageSize() < helpLines.length) helpScroll++;
+            return;
+        }
+        if (state == S_DAILY) { if ((press & FIRE_PRESSED) != 0) requestDaily(); return; }
+        if (state == S_AWARDS) {
+            if ((press & (UP_PRESSED | LEFT_PRESSED)) != 0 && awardsScroll > 0) awardsScroll--;
+            if ((press & (DOWN_PRESSED | RIGHT_PRESSED)) != 0 && awardsScroll + awardsPageSize() < ProgressStore.TITLES.length) awardsScroll++;
             return;
         }
         if (state == S_SETTINGS) {
@@ -415,11 +471,13 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         }
 
         if (state == S_GAMEOVER) {
-            if ((press & FIRE_PRESSED) != 0) { startNewGame(); state = S_PLAY; }
+            if ((press & FIRE_PRESSED) != 0) retryGame();
             return;
         }
 
-        if (moving || clearing) return;
+        if (moving || clearing) { heldDirection = heldTicks = 0; return; }
+
+        press |= repeatDirections(ks);
 
         int oldR = curR, oldC = curC;
         if ((press & LEFT_PRESSED)  != 0 && curC > 0)     curC--;
@@ -431,6 +489,13 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if ((press & FIRE_PRESSED) != 0) handleSelectOrMoveAt(curR, curC);
     }
 
+    private int repeatDirections(int keys) {
+        int direction = keys & (UP_PRESSED | DOWN_PRESSED | LEFT_PRESSED | RIGHT_PRESSED);
+        if (direction == 0 || direction != heldDirection) { heldDirection = direction; heldTicks = 0; return 0; }
+        heldTicks++;
+        return heldTicks >= 8 && (heldTicks - 8) % 3 == 0 ? direction : 0;
+    }
+
     protected void pointerPressed(int px, int py) {
         enqueue(E_POINTER, px, py);
     }
@@ -440,12 +505,14 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             int w = getWidth();
             if (px < w / 3) {
                 if (state == S_TITLE) titleSelect();
-                else if (state == S_CONFIRM || state == S_HELP) back();
+                else if (state == S_DAILY) requestDaily();
+                else if (state == S_CONFIRM || state == S_HELP || state == S_AWARDS) back();
                 else if (state == S_SETTINGS) saveSettings();
                 else if (state == S_ABOUT || state == S_STATS) back();
+                else if (state == S_GAMEOVER) retryGame();
                 else undoNow();
             } else if (px > (w * 2) / 3) {
-                if (state == S_CONFIRM) startNewGame(); else back();
+                if (state == S_CONFIRM) confirmNewGame(); else back();
             }
             return;
         }
@@ -457,13 +524,19 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if (state == S_CONFIRM) {
             if (py >= 116 && py < 188) {
                 confirmSel = py < 152 ? 0 : 1;
-                if (confirmSel == 1) startNewGame(); else back();
+                if (confirmSel == 1) confirmNewGame(); else back();
             }
             return;
         }
         if (state == S_HELP) {
             if (py < getHeight() / 2 && helpScroll > 0) helpScroll--;
             else if (helpScroll + helpPageSize() < helpLines.length) helpScroll++;
+            return;
+        }
+        if (state == S_DAILY) { if (py >= 50 && py < softBarY) requestDaily(); return; }
+        if (state == S_AWARDS) {
+            if (py < getHeight() / 2 && awardsScroll > 0) awardsScroll--;
+            else if (awardsScroll + awardsPageSize() < ProgressStore.TITLES.length) awardsScroll++;
             return;
         }
         if (state == S_SETTINGS) {
@@ -500,6 +573,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if (hasGame && menuSel == 0) { state = S_PLAY; return; }
         int item = hasGame ? menuSel - 1 : menuSel;
         if (item == 0) {
+            pendingDailyDay = 0;
             if (hasGame) { state = S_CONFIRM; confirmSel = 0; }
             else startNewGame();
         }
@@ -507,8 +581,21 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         else if (item == 2) { state = S_STATS; refreshStatistics(); }
         else if (item == 3) { state = S_HELP; helpScroll = 0; buildHelp(); }
         else if (item == 4) state = S_ABOUT;
+        else if (item == 5) { selectedDailyDay = ProgressStore.today(); state = S_DAILY; }
+        else if (item == 6) { state = S_AWARDS; awardsScroll = 0; }
         else exitNow();
     }
+
+    private void requestDaily() {
+        pendingDailyDay = selectedDailyDay;
+        if (hasGame) { state = S_CONFIRM; confirmSel = 0; }
+        else confirmNewGame();
+    }
+    private void confirmNewGame() {
+        if (pendingDailyDay != 0) startGame(9, 5, 2, pendingDailyDay);
+        else startNewGame();
+    }
+    private int currentBest() { return dailyDay == 0 ? preferences.best(N, colorCount, ballsPerTurn) : progress.dailyBest(dailyDay); }
 
     private void refreshStatistics() {
         statsCount = statsScroll = 0;
@@ -585,7 +672,10 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     private void updateAnimation() {
         if (state != S_PLAY && state != S_GAMEOVER) return;
+        king.setMood(emptyCount(), N * N, state == S_GAMEOVER);
         king.update(score);
+        if (recordTicks > 0) recordTicks--;
+        if (noticeTicks > 0) noticeTicks--;
         if (invalidTicks > 0) invalidTicks--;
         if (popupTicks > 0) popupTicks--;
         if (displayScore < score) displayScore += Math.max(1, (score - displayScore) / 4);
@@ -645,9 +735,40 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     private void completeTurn(int lineLength) {
         if (moves < Integer.MAX_VALUE) moves++;
         longestLine = Math.max(longestLine, lineLength);
-        preferences.recordTurn(N, colorCount, ballsPerTurn, score, lineLength);
+        if (dailyDay == 0) preferences.recordTurn(N, colorCount, ballsPerTurn, score, lineLength);
+        else progress.recordDaily(dailyDay, score);
+        boolean newBest = false;
+        if (!recordCelebrated && score > startingBest) {
+            recordCelebrated = true; recordTicks = 75; king.triumph();
+            newBest = true;
+        }
         if (emptyCount() == 0) { state = S_GAMEOVER; hasGame = false; }
+        awardProgress(lineLength);
+        if (newBest) pulse(180); else if (lineLength >= 5) pulse(50);
         pushSnapshot(); saveStableGame();
+    }
+
+    private void awardProgress(int lineLength) {
+        int bits = 0, sizes = progress.sizesMask;
+        if (lineLength >= 5) {
+            bits |= 1;
+            if (lineLength >= 7) bits |= 2;
+            if (popupScore > lineLength) bits |= 4;
+            if (threatened) bits |= 64;
+            sizes |= N == 7 ? 1 : N == 9 ? 2 : 4;
+        }
+        if (score >= 100) bits |= 8;
+        if (score >= 500) bits |= 16;
+        if (moves >= 100) bits |= 32;
+        if (dailyDay != 0 && state == S_GAMEOVER && score > 0) bits |= 128;
+        if (startingBest > 0 && score > startingBest) bits |= 256;
+        if (sizes == 7) bits |= 512;
+        int added = progress.recordProgress(bits, lineLength, score, moves, sizes);
+        if (added != 0) {
+            int first = 0; while ((added & (1 << first)) == 0) first++;
+            notice = "Unlocked: " + ProgressStore.TITLES[first]; noticeTicks = 150;
+        }
+        threatened = emptyCount() > 0 && emptyCount() <= 5;
     }
 
     // BFS + восстановление пути
@@ -889,17 +1010,30 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
     }
 
     private void startNewGame() {
-        N = preferences.size;
-        colorCount = preferences.colors;
-        ballsPerTurn = preferences.balls;
+        startGame(preferences.size, preferences.colors, preferences.balls);
+    }
+
+    private void retryGame() { startGame(N, colorCount, ballsPerTurn, dailyDay); }
+
+    private void startGame(int size, int colors, int balls) {
+        startGame(size, colors, balls, 0);
+    }
+    private void startGame(int size, int colors, int balls, int day) {
+        N = size;
+        colorCount = colors;
+        ballsPerTurn = balls;
         board = new int[N][N];
         pathR = new int[N*N]; pathC = new int[N*N];
         clearBoard();
+        dailyDay = day; pendingDailyDay = 0;
+        startingBest = currentBest();
+        recordCelebrated = false; recordTicks = 0; king.setRecord(startingBest);
+        noticeTicks = 0; threatened = false; heldDirection = heldTicks = 0;
         hasGame = true;
         computeLayout();
-        preferences.beginGame(N, colorCount, ballsPerTurn);
+        if (dailyDay == 0) preferences.beginGame(N, colorCount, ballsPerTurn);
         state = S_PLAY;
-        seed = newGameSeed();
+        seed = dailyDay == 0 ? newGameSeed() : ProgressStore.dailySeed(dailyDay);
         addRandomBalls(5);
         generateQueuedColors();
         prepareNextTurnPreviews();
@@ -947,6 +1081,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         s.score = score;
         s.seed = seed;
         s.moves = moves; s.longestLine = longestLine;
+        s.threatened = threatened;
         s.curR = curR; s.curC = curC;
         s.selR = selR; s.selC = selC;
         s.state = state;
@@ -982,9 +1117,10 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         }
         score = displayScore = s.score;
         king.reset(score);
-        popupTicks = 0;
+        popupTicks = recordTicks = noticeTicks = 0;
         seed = s.seed;
         moves = s.moves; longestLine = s.longestLine;
+        threatened = s.threatened;
         curR = s.curR; curC = s.curC;
         selR = s.selR; selC = s.selC;
         state = s.state;
@@ -1008,6 +1144,8 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         game.size = N; game.colors = colorCount; game.balls = ballsPerTurn;
         game.cells = s.cells; game.score = s.score; game.seed = s.seed;
         game.moves = s.moves; game.longestLine = s.longestLine; game.curR = s.curR; game.curC = s.curC;
+        game.dailyDay = dailyDay; game.startingBest = startingBest;
+        game.recordCelebrated = recordCelebrated; game.threatened = s.threatened;
         game.nextCount = s.nextCount;
         System.arraycopy(s.nR, 0, game.nextR, 0, 3); System.arraycopy(s.nC, 0, game.nextC, 0, 3);
         System.arraycopy(s.nCol, 0, game.nextCol, 0, 3); System.arraycopy(s.qCol, 0, game.queued, 0, 3);
@@ -1020,7 +1158,11 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         N = game.size; colorCount = game.colors; ballsPerTurn = game.balls;
         board = new int[N][N]; pathR = new int[N*N]; pathC = new int[N*N];
         clearBoard();
+        dailyDay = game.dailyDay;
+        startingBest = game.startingBest < 0 ? currentBest() : game.startingBest;
+        recordCelebrated = game.recordCelebrated; king.setRecord(startingBest);
         State s = new State(); s.cells = game.cells; s.score = game.score; s.seed = game.seed;
+        s.threatened = game.threatened;
         s.moves = game.moves; s.longestLine = game.longestLine; s.curR = game.curR; s.curC = game.curC;
         s.selR = s.selC = -1; s.state = S_PLAY; s.nextCount = (byte) game.nextCount;
         s.nR = game.nextR; s.nC = game.nextC; s.nCol = game.nextCol; s.qCol = game.queued;
@@ -1038,6 +1180,9 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         if (state == S_STATS) { drawStatistics(g); flushGraphics(); return; }
         if (state == S_HELP) { drawHelp(g); flushGraphics(); return; }
         if (state == S_CONFIRM) { drawConfirm(g); flushGraphics(); return; }
+        if (state == S_GAMEOVER) { drawResults(g); flushGraphics(); return; }
+        if (state == S_AWARDS) { drawAwards(g); flushGraphics(); return; }
+        if (state == S_DAILY) { drawDaily(g); flushGraphics(); return; }
 
         int w = getWidth();
         int totalW = previewCell * ballsPerTurn + previewGap * (ballsPerTurn - 1);
@@ -1125,10 +1270,11 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.setColor(0xFFFFFF);
         g.drawString("Score: " + displayScore, 2, 2, Graphics.TOP | Graphics.LEFT);
 
-        g.drawString("Best: " + preferences.best(N, colorCount, ballsPerTurn), w - 2, 2, Graphics.TOP | Graphics.RIGHT);
+        g.drawString("Best: " + currentBest(), w - 2, 2, Graphics.TOP | Graphics.RIGHT);
         String mode = N + "x" + N + " / " + colorCount + " colors / +" + ballsPerTurn;
         g.setColor(0xAAAAAA);
-        g.drawString(mode, w / 2, softBarY - g.getFont().getHeight() - 2, Graphics.TOP | Graphics.HCENTER);
+        String footer = recordTicks > 0 ? "NEW PERSONAL BEST!" : noticeTicks > 0 ? notice : dailyDay != 0 ? "DAILY " + ProgressStore.dayLabel(dailyDay) : mode;
+        g.drawString(fit(g, footer, w - 8), w / 2, softBarY - g.getFont().getHeight() - 2, Graphics.TOP | Graphics.HCENTER);
         king.draw(g);
         drawSoftBar(g, "Undo", "Menu");
 
@@ -1137,15 +1283,111 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
             g.setColor(0x101010); g.drawString("+" + popupScore, popupX + 1, y + 1, Graphics.TOP | Graphics.HCENTER);
             g.setColor(0xFFD24A); g.drawString("+" + popupScore, popupX, y, Graphics.TOP | Graphics.HCENTER);
         }
-        if (state == S_GAMEOVER) {
-            int lh = g.getFont().getHeight(), panelW = Math.min(w - 20, 210);
-            int y = originY + gridSizePx / 2 - lh - 10;
-            g.setColor(0x181818); g.fillRoundRect((w - panelW) / 2, y, panelW, lh * 2 + 20, 8, 8);
-            g.setColor(0xFFD24A); g.drawString("GAME OVER", w / 2, y + 6, Graphics.TOP | Graphics.HCENTER);
-            g.setColor(0xFFFFFF); g.drawString("FIRE: new / Undo", w / 2, y + lh + 10, Graphics.TOP | Graphics.HCENTER);
-        }
-
         flushGraphics();
+    }
+
+    private void drawResults(Graphics g) {
+        int w = getWidth(), fh = fontHeight;
+        g.setColor(0xFFD24A); g.drawString("GAME OVER", 12, 8, Graphics.TOP | Graphics.LEFT);
+        king.drawBadge(g, w - (w >= 300 ? 56 : w >= 220 ? 35 : 28) - 8, 4);
+        String[] lines = {"Score: " + score, "Moves: " + moves, "Longest line: " + longestLine,
+            N + "x" + N + " / " + colorCount + " colors / +" + ballsPerTurn,
+            "Previous best: " + startingBest,
+            score > startingBest ? "NEW PERSONAL BEST!" : "To beat best: " + ((long) startingBest - score + 1),
+            dailyDay == 0 ? "FIRE: retry / 1: Undo" : "Daily " + ProgressStore.dayLabel(dailyDay)};
+        int step = Math.max(fh + 2, Math.min(fh + 6, (softBarY - 42) / lines.length));
+        for (int i = 0; i < lines.length; i++) {
+            g.setColor(i == 5 && score > startingBest ? 0xFFD24A : 0xFFFFFF);
+            g.drawString(lines[i], 12, 36 + i * step, Graphics.TOP | Graphics.LEFT);
+        }
+        drawSoftBar(g, "Retry", "Menu");
+    }
+
+    private String fit(Graphics g, String text, int width) {
+        if (g.getFont().stringWidth(text) <= width) return text;
+        while (text.length() > 0 && g.getFont().stringWidth(text + "...") > width) text = text.substring(0, text.length() - 1);
+        return text + "...";
+    }
+
+    // Eight rows of eight pixels, from top left to bottom right.
+    private static final long[] AWARD_ICONS = {
+        0x000000FFAAFF0000L, 0x007E060C18303000L, 0x183C187EFF7E1818L,
+        0x003C7EFFE7FF7E3CL, 0x183C7EFFFF7E3C18L, 0x7E4224181824427EL,
+        0x101C1E17121C3040L, 0x247EFF818199817EL, 0xFF99BD7E3C18187EL, 0xE7A5E700E7A5E700L
+    };
+    private static final int[] AWARD_COLORS = {
+        0x71D985, 0xA499FF, 0xF67F6C, 0xF3BD53, 0xFFD66A,
+        0x69D2EB, 0xF69456, 0x61B9FF, 0xFFD24A, 0x62DDC7
+    };
+    private static final long[] MENU_ICONS = {
+        0x0060707878706000L, 0x0018187E7E181800L, 0x185A7E66667E5A18L,
+        0x00020626466666FFL, 0x3C66060C18180018L, 0x001800183818183CL,
+        0x247EFF818199817EL, 0xFF99BD7E3C18187EL, 0x7C44484F4F48447CL
+    };
+    private static final String[] MENU_ITEMS = {
+        "RESUME", "NEW GAME", "SETTINGS", "STATISTICS", "HELP", "ABOUT", "DAILY", "ACHIEVEMENTS", "EXIT"
+    };
+
+    private void drawIcon(Graphics g, long pixels, int x, int y, int scale, int color) {
+        g.setColor(color);
+        for (int row = 0; row < 8; row++) for (int col = 0; col < 8; col++) {
+            if ((pixels & (1L << (63 - row * 8 - col))) != 0)
+                g.fillRect(x + col * scale, y + row * scale, scale, scale);
+        }
+    }
+
+    private int awardsRowHeight() { return fontHeight * 3 + 8; }
+    private int awardsTop() { return fontHeight * 2 + 18; }
+    private int awardsPageSize() {
+        return Math.max(1, (softBarY - fontHeight - 5 - awardsTop()) / awardsRowHeight());
+    }
+
+    private void drawAwards(Graphics g) {
+        int w = getWidth(), fh = fontHeight, total = ProgressStore.TITLES.length;
+        int end = Math.min(total, awardsScroll + awardsPageSize());
+        g.setColor(0xFFD24A); g.drawString("ACHIEVEMENTS", w / 2, 6, Graphics.TOP | Graphics.HCENTER);
+        g.setColor(0xFFFFFF); g.drawString(progress.count() + " / " + total + " unlocked", w / 2, 10 + fh, Graphics.TOP | Graphics.HCENTER);
+        for (int i = awardsScroll; i < end; i++) {
+            int y = awardsTop() + (i - awardsScroll) * awardsRowHeight();
+            boolean unlocked = progress.unlocked(i);
+            int accent = unlocked ? AWARD_COLORS[i] : 0x8D949C;
+            g.setColor(unlocked ? 0x242A31 : 0x1C2025);
+            g.fillRect(6, y, w - 12, awardsRowHeight() - 3);
+            g.setColor(unlocked ? accent : 0x434952);
+            g.drawRect(6, y, w - 13, awardsRowHeight() - 4);
+            drawIcon(g, AWARD_ICONS[i], 12, y + (awardsRowHeight() - 19) / 2, 2, accent);
+            g.setColor(accent);
+            g.drawString(fit(g, ProgressStore.TITLES[i], w - 43), 34, y + 2, Graphics.TOP | Graphics.LEFT);
+            g.setColor(0xD2D6DC);
+            g.drawString(fit(g, ProgressStore.DETAILS[i], w - 43), 34, y + fh + 2, Graphics.TOP | Graphics.LEFT);
+            String status = unlocked ? ProgressStore.dayLabel(progress.awardDay(i)) : "Progress: " + progress.awardProgress(i);
+            g.setColor(accent);
+            g.drawString(fit(g, status, w - 43), 34, y + fh * 2 + 2, Graphics.TOP | Graphics.LEFT);
+        }
+        g.setColor(progress.storageOk ? 0xAAAAAA : 0xFF7755);
+        String footer = progress.storageOk ? (awardsScroll + 1) + "-" + end + " / " + total + "   Up/Down" : "Progress not saved!";
+        g.drawString(footer, w / 2, softBarY - fh - 2, Graphics.TOP | Graphics.HCENTER);
+        drawSoftBar(g, "Back", "Back");
+    }
+
+    private void drawDaily(Graphics g) {
+        int w = getWidth(), fh = fontHeight, y = 12;
+        String[] lines = {"DAILY CHALLENGE", ProgressStore.dayLabel(selectedDailyDay) + " (UTC)",
+            "9x9 / 5 colors / +2", "Today's best: " + progress.dailyBest(selectedDailyDay), "Same start and ball sequence"};
+        for (int i = 0; i < lines.length; i++) {
+            g.setColor(i == 0 ? 0xFFD24A : 0xFFFFFF);
+            g.drawString(fit(g, lines[i], w - 20), w / 2, y, Graphics.TOP | Graphics.HCENTER); y += fh + 4;
+        }
+        int before = Integer.MAX_VALUE;
+        for (int row = 0; row < 3 && y + fh < softBarY - fh; row++) {
+            int at = -1;
+            for (int i = 0; i < 14; i++) if (progress.dateAt(i) > 0 && progress.dateAt(i) < before && progress.dateAt(i) != selectedDailyDay && (at < 0 || progress.dateAt(i) > progress.dateAt(at))) at = i;
+            if (at < 0) break;
+            before = progress.dateAt(at); g.setColor(0xAAAAAA);
+            g.drawString(ProgressStore.dayLabel(before) + ": " + progress.scoreAt(at), w / 2, y, Graphics.TOP | Graphics.HCENTER); y += fh + 3;
+        }
+        if (!progress.storageOk) { g.setColor(0xFF7755); g.drawString("Records not saved!", w / 2, softBarY - fh - 2, Graphics.TOP | Graphics.HCENTER); }
+        drawSoftBar(g, "Play", "Back");
     }
 
     private void drawTitle(Graphics g) {
@@ -1155,38 +1397,37 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.setColor(0x101010);
         g.fillRect(0, 0, w, h);
 
-        if (titleLogo != null && h >= 280) {
-            int x = (w - titleLogo.getWidth()) / 2;
-            int y = h / 5 - titleLogo.getHeight() / 2;
-            if (y < 4) y = 4;
-            g.drawImage(titleLogo, x, y, Graphics.TOP | Graphics.LEFT);
+        int y0 = menuY(), step = menuStep();
+        Image logo = fitTitleLogo(w - 12, y0 - 6);
+        if (logo != null) {
+            g.drawImage(logo, w / 2, (y0 - logo.getHeight()) / 2, Graphics.TOP | Graphics.HCENTER);
         } else {
             String t = "LINES";
             g.setColor(0xFFD24A);
             int tw = g.getFont().stringWidth(t);
-            g.drawString(t, (w - tw)/2, 12, Graphics.TOP | Graphics.LEFT);
+            g.drawString(t, (w - tw)/2, (y0 - fontHeight) / 2, Graphics.TOP | Graphics.LEFT);
         }
 
-        // пункты меню
-        String[] items = hasGame ? new String[]{"RESUME", "NEW GAME", "SETTINGS", "STATISTICS", "HELP", "ABOUT", "EXIT"}
-                                 : new String[]{"START", "SETTINGS", "STATISTICS", "HELP", "ABOUT", "EXIT"};
         int lh = g.getFont().getHeight();
-        int y0 = menuY();
-        for (int i = 0; i < items.length; i++) {
-            boolean sel = (i == menuSel);
-            g.setColor(sel ? 0xFFFFFF : 0xAAAAAA);
-            int iw = g.getFont().stringWidth(items[i]);
-            int ix = (w - iw)/2;
-            int iy = y0 + i * menuStep();
-            g.drawString(items[i], ix, iy, Graphics.TOP | Graphics.LEFT);
-
-            if (sel) {
-                g.drawString("<", ix - 10, iy, Graphics.TOP | Graphics.LEFT);
-                g.drawString(">", ix + iw + 2, iy, Graphics.TOP | Graphics.LEFT);
-            }
+        int width = Math.min(w - 12, g.getFont().stringWidth("ACHIEVEMENTS") + 42);
+        int x = (w - width) / 2;
+        for (int i = 0; i < menuCount(); i++) {
+            int item = hasGame ? i : i + 1;
+            boolean start = !hasGame && i == 0;
+            boolean selected = i == menuSel;
+            int y = y0 + i * step;
+            g.setColor(selected ? 0x3D3320 : 0x212731);
+            g.fillRect(x, y, width, step - 1);
+            g.setColor(selected ? 0xFFD24A : 0x495565);
+            g.drawRect(x, y, width - 1, step - 2);
+            drawIcon(g, MENU_ICONS[start ? 0 : item], x + 7, y + (step - 9) / 2, 1,
+                     selected ? 0xFFD24A : 0x91B7D9);
+            g.setColor(selected ? 0xFFFFFF : 0xD2D6DC);
+            g.drawString(fit(g, start ? "START" : MENU_ITEMS[item], width - 26), x + 22,
+                         y + (step - lh) / 2, Graphics.TOP | Graphics.LEFT);
         }
 
-        if (((titleBlink++/20) & 1) == 0) {
+        if (y0 + menuCount() * step <= softBarY - lh - 6 && ((titleBlink++/20) & 1) == 0) {
             g.setColor(0x808080);
             String tip = sessionStore.storageOk ? "FIRE / Select" : "Save unavailable";
             int tw = g.getFont().stringWidth(tip);
@@ -1216,10 +1457,31 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         drawSoftBar(g, "Back", "Back");
     }
 
-    private int menuStep() { return fontHeight + (getHeight() < 280 ? 1 : 4); }
+    private Image fitTitleLogo(int maxWidth, int maxHeight) {
+        if (titleLogo == null || maxWidth < 1 || maxHeight < 1) return null;
+        int sourceWidth = titleLogo.getWidth(), sourceHeight = titleLogo.getHeight();
+        int height = Math.min(sourceHeight, Math.min(maxHeight, maxWidth * sourceHeight / sourceWidth));
+        if (height == sourceHeight) return titleLogo;
+        int width = Math.max(1, height * sourceWidth / sourceHeight);
+        if (fittedTitleLogo == null || fittedTitleLogo.getHeight() != height) {
+            int[] source = new int[sourceWidth * sourceHeight];
+            int[] scaled = new int[width * height];
+            titleLogo.getRGB(source, 0, sourceWidth, 0, 0, sourceWidth, sourceHeight);
+            for (int y = 0; y < height; y++) {
+                int sourceRow = ((2 * y + 1) * sourceHeight / (2 * height)) * sourceWidth;
+                for (int x = 0; x < width; x++)
+                    scaled[y * width + x] = source[sourceRow + (2 * x + 1) * sourceWidth / (2 * width)];
+            }
+            fittedTitleLogo = Image.createRGBImage(scaled, width, height, true);
+        }
+        return fittedTitleLogo;
+    }
+
+    private int menuStep() { return fontHeight + (getHeight() <= 208 ? 0 : getHeight() < 280 ? 1 : 4); }
     private int menuY() {
         int fh = fontHeight;
-        return Math.max(fh + 16, Math.min(getHeight() / 2 - fh, softBarY - menuCount() * menuStep() - fh - 12));
+        int bottomGap = getHeight() >= 280 ? 5 : 2;
+        return Math.max(fh + 6, Math.min(92, softBarY - menuCount() * menuStep() - bottomGap));
     }
 
     private void buildHelp() {
@@ -1254,7 +1516,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
 
     private void drawConfirm(Graphics g) {
         int w = getWidth(), fh = g.getFont().getHeight();
-        g.setColor(0xFFD24A); g.drawString("NEW GAME?", w / 2, 20, Graphics.TOP | Graphics.HCENTER);
+        g.setColor(0xFFD24A); g.drawString(pendingDailyDay == 0 ? "NEW GAME?" : "START DAILY?", w / 2, 20, Graphics.TOP | Graphics.HCENTER);
         g.setColor(0xFFFFFF); g.drawString("Replace current game?", w / 2, 56, Graphics.TOP | Graphics.HCENTER);
         g.setColor(0xAAAAAA); g.drawString("Saved turn will be lost.", w / 2, 58 + fh, Graphics.TOP | Graphics.HCENTER);
         for (int i = 0; i < 2; i++) {
@@ -1276,11 +1538,12 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         int w = getWidth();
         g.setColor(0xFFD24A);
         g.drawString("SETTINGS", w / 2, 14, Graphics.TOP | Graphics.HCENTER);
-        String[] labels = {"Board", "Colors", "New balls", "Music", "Music volume", "Effects", "Effects volume", "Patterns", "Difficulty"};
-        if (w < 220) labels = new String[]{"Board", "Colors", "New balls", "Music", "Music vol.", "Effects", "FX vol.", "Patterns", "Level"};
+        String[] labels = {"Board", "Colors", "New balls", "Music", "Music volume", "Effects", "Effects volume", "Patterns", "Difficulty", "Vibration", "King"};
+        if (w < 220) labels = new String[]{"Board", "Colors", "New balls", "Music", "Music vol.", "Effects", "FX vol.", "Patterns", "Level", "Vibrate", "King"};
         String[] values = {preferences.size + "x" + preferences.size,
                            "" + preferences.colors, "" + preferences.balls, preferences.music ? "On" : "Off",
-                           preferences.musicVolume + "%", preferences.effects ? "On" : "Off", preferences.effectsVolume + "%", preferences.patterns ? "On" : "Off", presetName()};
+                           preferences.musicVolume + "%", preferences.effects ? "On" : "Off", preferences.effectsVolume + "%", preferences.patterns ? "On" : "Off", presetName(),
+                           progress.vibration ? "On" : "Off", progress.skin == 0 ? "Red" : progress.skin == 1 ? "Emerald" : "Sapphire"};
         for (int i = settingsScroll; i < Math.min(SETTINGS_COUNT, settingsScroll + settingsVisible()); i++) {
             int y = SETTINGS_TOP + (i - settingsScroll) * SETTINGS_STEP;
             if (settingsSel == i) { g.setColor(0x303848); g.fillRoundRect(8, y - 1, w - 16, 20, 6, 6); }
@@ -1293,7 +1556,7 @@ public final class LinesCanvas extends GameCanvas implements Runnable {
         g.drawString(w < 220 ? "Arrows: change" : "Up/Down, Left/Right: change", w / 2, softBarY - fh * 3 - 6, Graphics.TOP | Graphics.HCENTER);
         String note = (soundtrack.failed() || soundEffects.failed()) ? "Audio unavailable" : w < 220 ? "Rules: NEW GAME" : "Rules apply to NEW GAME";
         g.drawString(note, w / 2, softBarY - fh * 2 - 4, Graphics.TOP | Graphics.HCENTER);
-        g.drawString(preferences.storageOk ? (w < 220 ? "Save / Back: cancel" : "Save applies / Back cancels") : "Storage unavailable!", w / 2,
+        g.drawString(preferences.storageOk && progress.storageOk ? (w < 220 ? "Save / Back: cancel" : "Save applies / Back cancels") : "Storage unavailable!", w / 2,
                      softBarY - fh - 2, Graphics.TOP | Graphics.HCENTER);
         drawSoftBar(g, "Save", "Back");
     }

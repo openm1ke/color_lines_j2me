@@ -117,11 +117,61 @@ MIDlet-Jar-Size: ${jar.size}
     </java>
   </target>
   <target name="run" depends="run-freej2me" description="Build and run FreeJ2ME"/>
-  <target name="test" depends="package" description="Check packaging and gameplay regressions">
-    <exec executable="python3" failonerror="true"><arg value="tools/check.py"/></exec>
+  <target name="compile-checks">
+    <mkdir dir="${build.dir}/tool-classes"/>
+    <mkdir dir="${build.dir}/tests"/>
+    <!-- The host checks use the current JDK, not the legacy game compiler. -->
+    <javac srcdir="tools/buildsrc" destdir="${build.dir}/tool-classes"
+           compiler="modern" fork="true" encoding="UTF-8" release="17" includeantruntime="false"/>
+    <javac srcdir="tests" destdir="${build.dir}/tests"
+           compiler="modern" fork="true" encoding="UTF-8" release="17" includeantruntime="false">
+      <classpath>
+        <pathelement location="${classes.dir}"/>
+        <pathelement location="tools/freej2me.jar"/>
+      </classpath>
+    </javac>
+  </target>
+
+  <macrodef name="game-check">
+    <attribute name="class"/>
+    <attribute name="store"/>
+    <attribute name="marker"/>
+    <sequential>
+      <local name="check.result"/><local name="check.output"/><local name="check.errors"/>
+      <java classname="@{class}" fork="true" dir="${basedir}" timeout="60000"
+            resultproperty="check.result" outputproperty="check.output" errorproperty="check.errors">
+        <classpath>
+          <pathelement location="${build.dir}/tests"/>
+          <pathelement location="${classes.dir}"/>
+          <pathelement location="tools/freej2me.jar"/>
+        </classpath>
+        <jvmarg value="-Dfile.encoding=ISO_8859_1"/>
+        <sysproperty key="lines.store" value="@{store}"/>
+        <sysproperty key="java.awt.headless" value="true"/>
+      </java>
+      <echo message="${check.output}"/><echo message="${check.errors}"/>
+      <fail message="@{class} failed or exited before completion">
+        <condition><not><and>
+          <equals arg1="${check.result}" arg2="0"/>
+          <contains string="${check.output}" substring="@{marker}"/>
+        </and></not></condition>
+      </fail>
+    </sequential>
+  </macrodef>
+
+  <target name="test" depends="package,compile-checks" description="Check packaging and gameplay regressions using Java">
+    <java classname="DistributionCheck" fork="true" failonerror="true" dir="${basedir}">
+      <classpath><pathelement location="${build.dir}/tool-classes"/></classpath>
+      <arg value="${dist.dir}/${suite.name}.jar"/><arg value="${dist.dir}/${suite.name}.jad"/>
+    </java>
+    <game-check class="GameplayCheck" store="lines-automated-check" marker="ALL GAMEPLAY CHECKS PASSED"/>
+    <game-check class="FeatureCheck" store="lines-feature-check" marker="ALL FEATURE CHECKS PASSED"/>
+    <game-check class="ProgressionCheck" store="lines-journey-check" marker="ALL PROGRESSION CHECKS PASSED"/>
   </target>
   <target name="check-emulator" depends="test" description="Run visible FreeJ2ME scenarios in isolated test saves">
-    <exec executable="python3" failonerror="true"><arg value="tools/emulator_check.py"/></exec>
+    <java classname="EmulatorSuite" fork="true" failonerror="true" dir="${basedir}">
+      <classpath><pathelement location="${build.dir}/tool-classes"/></classpath>
+    </java>
   </target>
 </project>
 

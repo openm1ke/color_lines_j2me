@@ -1,31 +1,10 @@
-#!/usr/bin/env python3
-"""Project-local Ant and legacy Java compiler. Requires Python 3 and Java 17+."""
-from pathlib import Path
-import hashlib, os, shutil, subprocess, sys, urllib.request
-ROOT = Path(__file__).resolve().parent
-ARTIFACTS = [
- ("org/apache/ant/ant/1.10.15/ant-1.10.15.jar", "763acda4a69588c9ea8817a952851ff0c2fc4bffa1d081c2565dc407f29d5794"),
- ("org/apache/ant/ant-launcher/1.10.15/ant-launcher-1.10.15.jar", "5c8551990307a032336d98ddaed549a39a689f07d4d4c6b950601bf22b3d6a1b"),
- ("org/eclipse/jdt/ecj/3.26.0/ecj-3.26.0.jar", "ac0ba5876eaf7ebb47749a0d1be179c51f194b9dd0b875d1c09e1b530f5a2db5"),
-]
-def main():
-    java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
-    if not java: raise RuntimeError('Install Java 17+ or set JAVA_HOME')
-    jars = ROOT / 'tools/build'
-    jars.mkdir(parents=True, exist_ok=True)
-    for artifact, digest in ARTIFACTS:
-        dest = jars / artifact.rsplit('/', 1)[1]
-        if not dest.exists():
-            print('Downloading ' + dest.name, flush=True)
-            with urllib.request.urlopen('https://repo.maven.apache.org/maven2/' + artifact, timeout=60) as response:
-                data = response.read()
-            if hashlib.sha256(data).hexdigest() != digest: raise RuntimeError('Checksum mismatch: ' + dest.name)
-            temp = dest.with_suffix('.download')
-            temp.write_bytes(data); temp.replace(dest)
-        if hashlib.sha256(dest.read_bytes()).hexdigest() != digest: raise RuntimeError('Checksum mismatch: ' + str(dest))
-    # Explicit classpath keeps unrelated tools out of the compiler process.
-    cp = os.pathsep.join(str(jars / a.rsplit('/', 1)[1]) for a, _ in ARTIFACTS)
-    return subprocess.call([java, '-cp', cp, 'org.apache.tools.ant.Main', '-f', str(ROOT / 'build.xml'), *sys.argv[1:]], cwd=ROOT)
-if __name__ == '__main__':
-    try: sys.exit(main())
-    except (OSError, RuntimeError) as error: sys.exit(str(error))
+#!/bin/sh
+# Convenience launcher; bootstrap, build and checks run on Java.
+set -eu
+PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${JAVA_HOME:-}" ]; then
+    JAVA_CMD="$JAVA_HOME/bin/java"
+else
+    JAVA_CMD=java
+fi
+exec "$JAVA_CMD" "$PROJECT_ROOT/tools/AntBootstrap.java" --project-root "$PROJECT_ROOT" "$@"

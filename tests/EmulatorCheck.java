@@ -11,6 +11,7 @@ public class EmulatorCheck {
     static Object call(Object o,String name)throws Exception { Method m=o.getClass().getDeclaredMethod(name);m.setAccessible(true);return m.invoke(o); }
     static void key(Object c,int code)throws Exception { Method m=c.getClass().getDeclaredMethod("keyPressed",int.class);m.setAccessible(true);m.invoke(c,code); }
     static void click(Object c,int x,int y)throws Exception { Method m=c.getClass().getDeclaredMethod("pointerPressed",int.class,int.class);m.setAccessible(true);m.invoke(c,x,y); }
+    static void release(Object c,int key)throws Exception { Method m=c.getClass().getDeclaredMethod("keyReleased",int.class);m.setAccessible(true);m.invoke(c,key); }
     static void check(boolean ok,String message){if(!ok)throw new AssertionError(message);}
     static void state(Object c,int wanted)throws Exception {
         long end=System.currentTimeMillis()+5000;while((Integer)get(c,"state")!=wanted&&System.currentTimeMillis()<end)Thread.sleep(20);
@@ -40,13 +41,69 @@ public class EmulatorCheck {
         if((Integer)get(c,"state")!=0){key(c,-7);state(c,0);}
         synchronized(c){set(c,"menuSel",index);}key(c,-6);state(c,screen);
     }
+    static void progressionJourney(Object c,int width,int height)throws Exception {
+        String suffix="-"+width+"x"+height;
+        Object progress=get(c,"progress");Class<?> type=progress.getClass();
+        int today=(Integer)type.getMethod("today").invoke(null);
+        synchronized(c) {
+            set(progress,"awards",0);set(progress,"sizesMask",0);set(progress,"skin",0);
+            type.getMethod("recordDaily",int.class,int.class).invoke(progress,today,3);
+        }
+        menu(c,6,9);screenshot("daily-menu"+suffix);
+        int[] preserved=cells(c);key(c,-6);state(c,7);key(c,-6);state(c,0);
+        check(Arrays.equals(preserved,cells(c)),"daily cancel lost active game");
+        menu(c,6,9);key(c,-6);state(c,7);key(c,-7);state(c,1);
+        check((Integer)get(c,"dailyDay")==today&&(Integer)get(c,"N")==9&&(Integer)get(c,"colorCount")==5&&(Integer)get(c,"ballsPerTurn")==2,"daily rules mismatch");
+        screenshot("daily-game"+suffix);
+        int initialColumn=(Integer)get(c,"curC");key(c,'6');Thread.sleep(100);release(c,'6');Thread.sleep(80);
+        check((Integer)get(c,"curC")==initialColumn+1,"numeric key tap failed in emulator");
+        key(c,'6');Thread.sleep(470);release(c,'6');Thread.sleep(80);
+        check((Integer)get(c,"curC")>initialColumn+2,"direction hold failed in emulator");
+        synchronized(c) {
+            int[][] b=(int[][])get(c,"board");for(int[] row:b)Arrays.fill(row,0);
+            for(int col=0;col<6;col++)b[4][col]=1;b[5][6]=1;
+            set(c,"selR",-1);set(c,"selC",-1);call(c,"pushSnapshot");
+        }
+        int cell=(Integer)get(c,"cell"),ox=(Integer)get(c,"originX"),oy=(Integer)get(c,"originY");
+        click(c,ox+6*cell+cell/2,oy+5*cell+cell/2);Thread.sleep(80);click(c,ox+6*cell+cell/2,oy+4*cell+cell/2);
+        long clearDeadline=System.currentTimeMillis()+6000;
+        while((Integer)get(c,"score")<7&&System.currentTimeMillis()<clearDeadline)Thread.sleep(20);
+        stable(c);
+        screenshot("daily-clear-check"+suffix);
+        check((Integer)get(c,"score")==7&&(Boolean)get(c,"recordCelebrated"),"daily clear/record celebration failed: score="+get(c,"score")+" target="+get(c,"startingBest")+" selected="+get(c,"selR")+","+get(c,"selC")+" moving="+get(c,"moving")+" clearing="+get(c,"clearing"));
+        check((Integer)type.getMethod("count").invoke(progress)>=3,"daily first clear did not unlock expected achievements");
+        screenshot("king-record"+suffix);
+        synchronized(c){
+            int[][] b=(int[][])get(c,"board");for(int r=0;r<b.length;r++)for(int col=0;col<b.length;col++)b[r][col]=(r*2+col)%5+1;
+            b[0][0]=b[0][1]=b[0][2]=0;set(c,"selR",-1);set(c,"selC",-1);
+            Object king=get(c,"king");set(king,"saluteTicks",0);set(king,"victoryTicks",0);
+        }
+        screenshot("worried-king"+suffix);
+        synchronized(c){
+            int[][] b=(int[][])get(c,"board");b[0][0]=b[0][1]=b[0][2]=1;
+            Method turn=c.getClass().getDeclaredMethod("completeTurn",int.class);turn.setAccessible(true);turn.invoke(c,0);
+        }
+        state(c,3);screenshot("game-results"+suffix);key(c,-6);state(c,1);
+        check((Integer)get(c,"dailyDay")==today&&(Integer)get(c,"score")==0,"daily Retry lost mode");
+        menu(c,7,8);screenshot("achievements"+suffix);
+        key(c,'8');Thread.sleep(60);release(c,'8');Thread.sleep(60);
+        check((Integer)get(c,"awardsScroll")>0,"achievement keyboard scroll failed");screenshot("achievements-scroll"+suffix);
+        menu(c,2,4);
+        synchronized(c){set(c,"settingsSel",9);call(c,"scrollSettings");}
+        screenshot("vibration-setting"+suffix);
+        key(c,'6');Thread.sleep(60);release(c,'6');Thread.sleep(60);check((Boolean)get(progress,"vibration"),"vibration setting did not toggle");
+        synchronized(c){set(c,"settingsSel",10);call(c,"scrollSettings");}
+        key(c,'6');Thread.sleep(60);release(c,'6');Thread.sleep(60);check((Integer)get(progress,"skin")==1,"unlocked king skin could not be selected");
+        screenshot("king-skin-setting"+suffix);key(c,-6);state(c,0);key(c,-6);state(c,1);screenshot("emerald-king"+suffix);
+        System.out.println("VISIBLE PROGRESSION PASSED: "+width+"x"+height+" daily, record/king, results/retry, achievements/skin, vibration controls and held numeric keys");
+    }
     public static void main(String[] args) {
         try {
             int width=args.length>0?Integer.parseInt(args[0]):240,height=args.length>1?Integer.parseInt(args[1]):320;
             String name=System.getProperty("lines.store");check(name!=null&&name.startsWith("lines-ui-"),"dedicated RMS namespace required");
             Mobile.setPlatform(new MobilePlatform(width,height),()->{});
             String jar=new File(System.getProperty("lines.project","."),"dist/lines.jar").getAbsolutePath();check(Mobile.getPlatform().load(new File(jar).toURI().toString()),"JAR load failed");
-            for(String n:new String[]{name,name+"-game"})try{javax.microedition.rms.RecordStore.deleteRecordStore(n);}catch(Exception ignored){}
+            for(String n:new String[]{name,name+"-game",name+"-progress"})try{javax.microedition.rms.RecordStore.deleteRecordStore(n);}catch(Exception ignored){}
             Mobile.clearOldLog();MobilePlatform.lcdWidth=0;MobilePlatform.lcdHeight=0;
             FreeJ2ME.app=new FreeJ2ME(new String[]{jar,"0",""+width,""+height,"2"});
             Object midlet=Mobile.midlet;Object c=get(midlet,"canvas");
@@ -61,7 +118,8 @@ public class EmulatorCheck {
                 for(String line:lines)check(javax.microedition.lcdui.Font.getDefaultFont().stringWidth(line)<=width-20,"help clips on small screen");
                 screenshot("help-"+width+"x"+height);menu(c,1,7);screenshot("confirm-"+width+"x"+height);key(c,-6);state(c,0);
                 menu(c,3,5);screenshot("statistics-"+width+"x"+height);
-                check(Arrays.equals(unchanged,cells(c))&&(Integer)get(c,"seed")==sameSeed,"navigation changed saved game");call(c,"stop");
+                check(Arrays.equals(unchanged,cells(c))&&(Integer)get(c,"seed")==sameSeed,"navigation changed saved game");
+                progressionJourney(c,width,height);call(c,"stop");
                 System.out.println("VISIBLE EMULATOR LAYOUT PASSED: "+width+"x"+height);System.exit(0);
             }
             key(c,-6);state(c,1);
@@ -120,7 +178,7 @@ public class EmulatorCheck {
                 key(c,-6);state(c,0);menu(c,1,7);key(c,-7);state(c,1);
                 check((Integer)get(c,"N")==wanted,"manual board size not applied");kingBounds(c);screenshot("field-"+wanted+"x"+wanted);
             }
-            call(c,"stop");
+            progressionJourney(c,width,height);call(c,"stop");
             System.out.println("VISIBLE EMULATOR CHECK PASSED: all seven features, real input, RMS resume, patterns/presets, confirmation/help/statistics and 7x7/9x9/11x11 boards");System.exit(0);
         }catch(Throwable e){e.printStackTrace();System.exit(1);}
     }

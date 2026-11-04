@@ -15,6 +15,7 @@ public class LinesMidlet extends MIDlet implements CommandListener {
             canvas = new LinesCanvas(new LinesCanvas.Host() {
                 public void onExitRequested() { exit(); }
             });
+            canvas.setDisplay(display);
 
             canvas.addCommand(UNDO);
             canvas.addCommand(EXIT);

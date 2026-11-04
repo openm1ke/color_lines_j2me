@@ -79,6 +79,10 @@ final class KingPixels {
     };
 
     static Image render(int width) {
+        return render(width, 0);
+    }
+
+    static Image render(int width, int skin) {
         int height = Math.max(1, (66 * width + 35) / 70);
         int[] pixels = new int[width * height];
         // Palette-preserving area voting avoids phase-dependent missing features.
@@ -101,6 +105,10 @@ final class KingPixels {
         if (width < 70) {
             face(pixels, width, height);
             if (width >= 28) regalia(pixels, width, height);
+        }
+        if (skin > 0) for (int i = 0; i < pixels.length; i++) {
+            if (pixels[i] == 0xFFFF0000) pixels[i] = skin == 1 ? 0xFF23B56A : 0xFF458CFF;
+            else if (pixels[i] == 0xFFAA0000) pixels[i] = skin == 1 ? 0xFF125D39 : 0xFF254F9F;
         }
         return Image.createRGBImage(pixels, width, height, true);
     }

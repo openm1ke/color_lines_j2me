@@ -145,7 +145,9 @@ public class FeatureCheck extends GameplayCheck {
         check(Arrays.equals(stableBoard,flat((int[][])get(interrupted,"board")))&&(Integer)get(interrupted,"score")==0,"interrupted clear saved a partial line");
         set(c,"paused",false);settle(c);LinesCanvas done=new LinesCanvas(null);
         check((Integer)get(done,"score")==5&&(Integer)get(done,"longestLine")==5&&Arrays.equals(flat(b),flat((int[][])get(done,"board"))),"completed clear not saved");
-        check((Integer)get(get(done,"king"),"height")>6,"saved score did not restore pedestal height");
+        BallKing restoredKing=(BallKing)get(done,"king");
+        java.lang.reflect.Method restoredTarget=BallKing.class.getDeclaredMethod("targetHeight",int.class);restoredTarget.setAccessible(true);
+        check((Integer)get(restoredKing,"height")==((Integer)restoredTarget.invoke(restoredKing,5)).intValue(),"saved score did not restore pedestal height");
         c.stop();c=canvas();call(c,"startNewGame");b=(int[][])get(c,"board");for(int[] row:b)Arrays.fill(row,1);
         java.lang.reflect.Method end=LinesCanvas.class.getDeclaredMethod("completeTurn",int.class);end.setAccessible(true);end.invoke(c,0);
         check((Integer)get(c,"state")==3&&!((Boolean)get(c,"hasGame")),"full board did not end game");
@@ -198,10 +200,14 @@ public class FeatureCheck extends GameplayCheck {
         for(int n=0;n<40;n++)king.update(0);
         check((Integer)get(king,"height")==initial,"pedestal grew without scoring");
         java.lang.reflect.Method target=BallKing.class.getDeclaredMethod("targetHeight",int.class);target.setAccessible(true);
-        for(int score:new int[]{5,10,50,100,1000,Integer.MAX_VALUE}){
+        for(int score:new int[]{5,10,50,100,500,1000,Integer.MAX_VALUE}){
             int goal=(Integer)target.invoke(king,score);check(goal>=previous&&goal<=100,"pedestal must grow monotonically within bounds");
             previous=goal;
         }
+        check((Integer)target.invoke(king,5)<=initial+2,"first five points raise the king too far");
+        check((Integer)target.invoke(king,100)<25,"100 points should still leave a low pedestal");
+        check(Math.abs((Integer)target.invoke(king,500)-51)<=1,"500 points should reach about half height");
+        check((Integer)target.invoke(king,1000)<75,"1000 points should leave room for further growth");
         king.celebrate(5);for(int n=0;n<40;n++)king.update(5);
         check((Integer)get(king,"height")>initial&&(Integer)get(king,"height")==((Integer)target.invoke(king,5)).intValue(),"pedestal did not animate upward");
         check((Integer)get(king,"saluteTicks")==0,"king celebration did not finish");king.reset(0);check((Integer)get(king,"height")==initial,"new game did not reset pedestal");

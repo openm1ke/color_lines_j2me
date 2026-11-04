@@ -25,7 +25,8 @@ public final class SessionStore {
             byte[] bytes = store.getRecord(1);
             if (bytes.length < 36 || bytes.length > 256) throw new IOException("Invalid saved game size");
             DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes));
-            if (in.readInt() != MAGIC) throw new IOException("Invalid saved game version");
+            int version = in.readInt();
+            if (version != MAGIC && version != MAGIC + 1) throw new IOException("Invalid saved game version");
             SavedGame game = new SavedGame();
             game.size = in.readUnsignedByte(); game.colors = in.readUnsignedByte(); game.balls = in.readUnsignedByte();
             if (GameStore.index(game.size, game.colors, game.balls) < 0) throw new IOException("Invalid rules");
@@ -33,6 +34,10 @@ public final class SessionStore {
             game.curR = in.readUnsignedByte(); game.curC = in.readUnsignedByte(); game.nextCount = in.readUnsignedByte();
             game.cells = new byte[game.size * game.size]; in.readFully(game.cells);
             in.readFully(game.nextR); in.readFully(game.nextC); in.readFully(game.nextCol); in.readFully(game.queued);
+            if (version >= MAGIC + 1) {
+                game.dailyDay = in.readInt(); game.startingBest = in.readInt();
+                game.recordCelebrated = in.readBoolean(); game.threatened = in.readBoolean();
+            }
             if (in.available() != 4 || in.readInt() != checksum(bytes, bytes.length - 4) || !game.valid())
                 throw new IOException("Invalid saved game data");
             storageOk = true;
@@ -52,10 +57,12 @@ public final class SessionStore {
         try {
             if (!game.valid()) throw new IOException("Invalid turn");
             ByteArrayOutputStream bytes = new ByteArrayOutputStream(); DataOutputStream out = new DataOutputStream(bytes);
-            out.writeInt(MAGIC); out.writeByte(game.size); out.writeByte(game.colors); out.writeByte(game.balls);
+            out.writeInt(MAGIC + 1); out.writeByte(game.size); out.writeByte(game.colors); out.writeByte(game.balls);
             out.writeInt(game.score); out.writeInt(game.seed); out.writeInt(game.moves); out.writeInt(game.longestLine);
             out.writeByte(game.curR); out.writeByte(game.curC); out.writeByte(game.nextCount);
             out.write(game.cells); out.write(game.nextR); out.write(game.nextC); out.write(game.nextCol); out.write(game.queued);
+            out.writeInt(game.dailyDay); out.writeInt(game.startingBest);
+            out.writeBoolean(game.recordCelebrated); out.writeBoolean(game.threatened);
             out.flush(); byte[] payload = bytes.toByteArray(); out.writeInt(checksum(payload, payload.length)); out.flush();
             byte[] data = bytes.toByteArray();
             store = RecordStore.openRecordStore(name, true);
